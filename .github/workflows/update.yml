@@ -1,0 +1,95 @@
+name: Update upstream
+
+# Runs twice daily and on manual dispatch.
+# For each agent with an update script, runs `nix run .#update-<agent>`,
+# then opens (or updates) a PR against main with the new hashes.
+# The PR auto-merges once CI passes.
+
+on:
+  schedule:
+    - cron: '0 6,18 * * *'   # 06:00 and 18:00 UTC
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: 'Agent to update (blank = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Update ${{ matrix.agent }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: ${{ fromJSON(github.event.inputs.agent && format('["{0}"]', github.event.inputs.agent) || '["claude","hermes","opencode","codex","gemini","aider"]') }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: DeterminateSystems/nix-installer-action@da36cb69b1c3247ad7a1f931ebfd954a1105ef14  # v14
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Run update script
+        id: update
+        run: |
+          nix run .#update-${{ matrix.agent }} 2>&1
+
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          VERSION=$(git diff HEAD -- '*.nix' | grep -oP '(?<=\+.*version = ")[^"]+' | tail -1)
+          if [ -z "$VERSION" ]; then
+            echo "::warning::Could not extract version for ${{ matrix.agent }}, falling back to 'latest'"
+            VERSION="latest"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AGENT="${{ matrix.agent }}"
+          VERSION="${{ steps.update.outputs.version }}"
+          BRANCH="auto/update-${AGENT}"
+          TITLE="auto: bump ${AGENT} to ${VERSION}"
+
+          git checkout -b "$BRANCH"
+          git add -u
+          git commit -m "$TITLE"
+          git push origin "$BRANCH" --force-with-lease
+
+          # Reuse any existing open PR for this branch; create one if none exists
+          PR=$(gh pr list \
+            --head "$BRANCH" --base main \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$PR" ]; then
+            gh pr edit "$PR" --title "$TITLE"
+          else
+            gh pr create \
+              --title "$TITLE" \
+              --body  "Automated hash bump for \`${AGENT}\` -- auto-merges when CI passes." \
+              --base  main \
+              --head  "$BRANCH"
+            PR=$(gh pr list \
+              --head "$BRANCH" --base main \
+              --json number --jq '.[0].number')
+          fi
+
+          # Auto-merge once required status checks are green
+          gh pr merge "$PR" --auto --squash
