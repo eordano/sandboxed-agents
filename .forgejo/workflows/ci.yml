@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-show:
+    name: nix flake show
+    runs-on: nix-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix --version && id
+      - run: nix flake show --all-systems --no-write-lock-file
+
+  lint:
+    name: nix run .#check-all
+    runs-on: nix-latest
+    needs: flake-show
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: nix run .#check-all

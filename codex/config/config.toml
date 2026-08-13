@@ -1,0 +1,6 @@
+[analytics]
+enabled = false
+
+[model_providers.openai-key]
+name = "OpenAI (API key)"
+env_key = "OPENAI_API_KEY"
