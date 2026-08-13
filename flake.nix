@@ -13,7 +13,7 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     opencode-src = {
-      url = "github:anomalyco/opencode/v1.18.16";
+      url = "github:anomalyco/opencode/v1.18.18";
       flake = false;
     };
     gemini-src = {
