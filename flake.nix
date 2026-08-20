@@ -17,7 +17,7 @@
       flake = false;
     };
     gemini-src = {
-      url = "github:google-gemini/gemini-cli/v0.55.1";
+      url = "github:google-gemini/gemini-cli/v0.56.0";
       flake = false;
     };
     aider-src = {
