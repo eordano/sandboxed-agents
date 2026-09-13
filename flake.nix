@@ -13,11 +13,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     opencode-src = {
-      url = "github:anomalyco/opencode/v1.18.16";
+      url = "github:anomalyco/opencode/v1.18.30";
       flake = false;
     };
     gemini-src = {
-      url = "github:google-gemini/gemini-cli/v0.55.1";
+      url = "github:google-gemini/gemini-cli/v0.59.0";
       flake = false;
     };
     aider-src = {
