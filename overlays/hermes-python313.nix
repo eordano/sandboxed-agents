@@ -1,5 +1,8 @@
 {
   pkgs,
+  claudeAgent,
+  codexAgent,
+  opencodeAgent ? null,
   hermes-agent-src,
   uv2nix,
   pyproject-nix,
@@ -13,7 +16,9 @@ let
 
   overlay = workspace.mkPyprojectOverlay { sourcePreference = "wheel"; };
 
-  python = pkgs.python312;
+  # Upstream requires Python >=3.11,<3.14; nixpkgs' default is already 3.14,
+  # so keep the newest interpreter inside Hermes' supported range.
+  python = pkgs.python313;
   isAarch64Darwin = stdenv.hostPlatform.system == "aarch64-darwin";
 
   mkPrebuiltPassthru = dependencies: {
@@ -57,6 +62,11 @@ let
   pythonPackageOverrides =
     final: prev:
     setuptoolsBuildSystemFixes final prev
+    // {
+      hermes-agent = prev.hermes-agent.overrideAttrs (_: {
+        HERMES_NIX_BUILD = "1";
+      });
+    }
     // (
       if isAarch64Darwin then
         {
@@ -100,9 +110,6 @@ let
     ]
   );
 
-  # Upstream's [all] deliberately excludes provider extras (they pip-install
-  # lazily at first use, which cannot work in an immutable Nix venv inside a
-  # network-restricted sandbox); bundle the Anthropic provider explicitly.
   hermesVenv = pythonSet.mkVirtualEnv "hermes-agent-env" {
     hermes-agent = [
       "all"
@@ -114,6 +121,17 @@ let
     src = hermes-agent-src + "/skills";
     filter = path: _type: !(lib.hasInfix "/index-cache/" path);
   };
+
+  claudeCompanion = pkgs.writeShellScriptBin "claude" ''
+    exec ${claudeAgent}/bin/claude-achtung-achtung "$@"
+  '';
+  companionPath = lib.makeBinPath (
+    [
+      claudeCompanion
+      codexAgent
+    ]
+    ++ lib.optional (opencodeAgent != null) opencodeAgent
+  );
 
   runtimeDeps = with pkgs; [
     nodejs_24
@@ -143,9 +161,20 @@ stdenv.mkDerivation {
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
 
+    # Keep both companion commands in Hermes' runtime closure.
+    test -x ${claudeCompanion}/bin/claude
+    test -x ${codexAgent}/bin/codex
+    ${lib.optionalString (opencodeAgent != null) "test -x ${opencodeAgent}/bin/opencode"}
+
+    # Upstream derives its root py-modules in setup.py; make sure the wheel
+    # still ships the registry, which delegate_task imports lazily only after
+    # a child is spawned.
+    ${hermesVenv}/bin/python -c 'from hermes_state_registry import get_shared_session_db'
+
     ${lib.concatMapStringsSep "\n"
       (name: ''
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
+          --prefix PATH : "${companionPath}" \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills
       '')

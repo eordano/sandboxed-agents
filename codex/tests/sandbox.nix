@@ -21,6 +21,8 @@ import ../../lib/tests/sandbox.nix {
           f"base_url = \"{_codex_base_url}\"\n"
           f"TOML\n'"
       )
+      machine.log("codex: a cccp package on the sandbox PATH that carries the plugin implies ~/.codex/hooks.json is shipped")
+      machine.succeed(sh("_c=$(command -v cccp) || exit 0; _p=$(dirname \"$_c\")/../share/cccp/plugin/codex; [ -d \"$_p\" ] || exit 0; grep -q \"hook-start --agent codex\" ~/.codex/hooks.json && test -d ~/.codex/cccp"))
     '';
     apiLogCheck = "responses";
     skipApiKeyCheck = true;

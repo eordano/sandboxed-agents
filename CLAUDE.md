@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code sessions working on this repo. The [README](./README.md) covers what the project does and how users run it; this file covers how to change it.
+How to change this repo; the [README](./README.md) covers what it does and how users run it.
 
 ## Layout
 
@@ -17,12 +17,10 @@ Guidance for Claude Code sessions working on this repo. The [README](./README.md
 Three backends must stay in parity. For a boolean toggle `--allow-X`:
 
 1. **Help text** -- extend the heredoc in each of the three backend files.
-2. **Init vars** -- `ENABLE_X=0`, `CLI_ENABLE_X=""` before the argv parser.
-3. **Argv parser** -- handle `--allow-X` / `--no-allow-X` (alias `--no-x`). Always support both `--flag value` and `--flag=value`.
-4. **Resolver** -- after the config is read, one `_resolve_bool ENABLE_X CLI_ENABLE_X SANDBOX_ALLOW_X x <default>` call. Precedence CLI > env > config > default is non-negotiable; don't read config keys directly.
-5. **Usage logic** -- gate on `ENABLE_X`. If a backend can't support the flag, *warn and ignore* rather than silently dropping: `echo "Warning: --allow-X is not supported on [backend]; [suggestion]." >&2`. Point users at the native escape hatch when one exists (e.g. microvm suggests `--extra-qemu-args`).
-6. **Docs** -- add a row to the `README.md` flag table and a row + bullet to `docs/flags.md` under the right section. Use the `y`/`n`/`p`/`x` support matrix convention.
-7. **Test** -- add an assertion to `lib/tests/sandbox.nix` covering both enabled and disabled states.
+2. **Flag table** -- add a row to `boolFlags` in `lib/data.nix` (keyed by config key; `mk VAR --flag SANDBOX_ENV`) and list it in each backend's `boolFlagSets` entry. That generates the `ENABLE_X`/`CLI_ENABLE_X` init, the `--allow-X` / `--no-allow-X` (alias `--no-x`) parser arms, and the `_resolve_bool` call. Precedence CLI > env > config > default is non-negotiable; don't read config keys directly. Value flags still need hand-written arms supporting both `--flag value` and `--flag=value`.
+3. **Usage logic** -- gate on `ENABLE_X`. If a backend can't support the flag, *warn and ignore* rather than silently dropping: `echo "Warning: --allow-X is not supported on [backend]; [suggestion]." >&2`. Point users at the native escape hatch when one exists (e.g. microvm suggests `--extra-qemu-args`).
+4. **Docs** -- add a row to the `README.md` flag table and a row + bullet to `docs/flags.md` under the right section. Use the `y`/`n`/`p`/`x` support matrix convention.
+5. **Test** -- add an assertion to `lib/tests/sandbox.nix` covering both enabled and disabled states.
 
 Repeatable value-flags (`--mount`, `--env`, `--allow-host`, `--extra-*-args`) have **no** `SANDBOX_*` env var -- don't invent one. They have a config-array equivalent (`paths`, `extraEnvs`, `extraBubblewrapArgs`, etc.) and CLI args append to the config values.
 

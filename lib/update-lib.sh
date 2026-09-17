@@ -19,15 +19,10 @@ update_init() {
     }
   done
 
-  # Snapshot the files the update mutates, so a failed run can restore them
-  # without discarding unrelated uncommitted changes (as git checkout would).
   _SNAP_DIR=$(mktemp -d)
   cp "$BINARY_NIX" "$_SNAP_DIR/binary.nix"
   cp "$REPO_ROOT/flake.nix" "$REPO_ROOT/flake.lock" "$_SNAP_DIR/"
 
-  # A Ctrl-C during the (long) hash-probing build would otherwise leave the
-  # fake hash and a bumped version/lock in the tree, which does not just fail
-  # the next build -- it is a committable state.
   trap _update_restore EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -52,8 +47,6 @@ version_lte() {
 
 check_version() {
   LATEST="$1"
-  # The version is spliced into sed scripts and flake refs -- reject anything
-  # that isn't a plain version string before it can corrupt them.
   if ! [[ "$LATEST" =~ ^[0-9A-Za-z._+-]+$ ]]; then
     echo "ERROR: suspicious upstream version '$LATEST'." >&2
     exit 1
@@ -91,7 +84,6 @@ compute_hash() {
     echo "ERROR: Could not extract ${label} hash. Last 20 lines of build log:" >&2
     tail -20 "$log" >&2
     rm -f "$log"
-    # Don't leave the fake hash (and a half-bumped version/lock) behind.
     cp "$_SNAP_DIR/binary.nix" "$BINARY_NIX"
     cp "$_SNAP_DIR/flake.nix" "$REPO_ROOT/flake.nix"
     cp "$_SNAP_DIR/flake.lock" "$REPO_ROOT/flake.lock"

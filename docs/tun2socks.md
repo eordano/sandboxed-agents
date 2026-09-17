@@ -12,12 +12,8 @@ flag, because neither has a clean seam to inject a userspace router.
 
 ## The flow
 
-```
-  agent -> tun0 (198.18.0.1/15) -> tun2socks -> SOCKS5 server
-                ↓ (for RFC1918 dests)
-             tap0 -> slirp4netns -> host network stack
-```
-
+Agent traffic goes `tun0` -> tun2socks -> SOCKS5 server, except RFC1918
+destinations, which go `tap0` -> slirp4netns -> host network stack.
 Three moving parts:
 
 1. **[slirp4netns]** creates a `tap0` in a fresh net namespace and

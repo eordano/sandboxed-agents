@@ -4,7 +4,6 @@
   cacert,
   agentName,
   configFileName,
-  enableYolo ? false,
   sandboxHomeDest ? ".${agentName}",
   xdgRemaps ? [ ],
   homeAllowBlock,
@@ -12,13 +11,18 @@
   configParseBlock,
   yoloInjectionBlock ? "",
   sandboxInitLines,
+  argvGuardLines ? "",
+  extraPathPrefix ? "",
   extraEnvLines,
   configDeployLines,
   extraHomeDirCreateBlock,
   mkBackendDispatch,
+  boolFlagBlocks,
+  yoloBlocks,
   ...
 }:
 let
+  flagBlocks = boolFlagBlocks "darwin";
   isLikelyDir =
     path:
     let
@@ -51,6 +55,7 @@ writeShellScript "${agentName}-sandbox" ''
     --allow-docker           Mount Docker socket                                  env SANDBOX_ALLOW_DOCKER
     --allow-libvirt          Allow libvirt socket dir (Homebrew + ~/.libvirt)     env SANDBOX_ALLOW_LIBVIRT
     --allow-fuse             Check macFUSE install (paths already reachable)     env SANDBOX_ALLOW_FUSE
+    --privacy-filter         Unsupported on macOS; accepted for parity              env SANDBOX_PRIVACY_FILTER
 
     --backend BACKEND        Re-exec wrapper under BACKEND (bwrap|microvm)        env SANDBOX_BACKEND
                              Also reads `backend` from ${configFileName}.
@@ -68,94 +73,40 @@ writeShellScript "${agentName}-sandbox" ''
     --sandbox-open-shell     Drop into a shell inside the sandbox                 env START_SHELL
     --sandbox-help           Show this help
   HELP
-        ${
-          if enableYolo then
-            ''
-              echo "  --yolo                   Skip permission prompts (claude only)      env SANDBOX_YOLO"
-              echo "  --no-yolo                Force prompts even if config/env enables it"''
-          else
-            ""
-        }
+        ${yoloBlocks.help}
         echo
         echo "Wrapper: $SELF_BIN"
         [ -f "$DOC_README" ] && echo "README:  $DOC_README"
       }
 
-      ENABLE_SSH=0
-      ENABLE_SSH_WRITE=0
-      ENABLE_GPG=0
-      ENABLE_GIT=0
-      ENABLE_DOCKER=0
-      ENABLE_LIBVIRT=0
-      ENABLE_FUSE=0
-      MOUNT_HOME_CACHE=0
-      MOUNT_COMMON_HOME=0
-
-      CLI_ENABLE_SSH=""
-      CLI_ENABLE_SSH_WRITE=""
-      CLI_ENABLE_GPG=""
-      CLI_ENABLE_GIT=""
-      CLI_ENABLE_DOCKER=""
-      CLI_ENABLE_LIBVIRT=""
-      CLI_ENABLE_FUSE=""
-      CLI_MOUNT_HOME_CACHE=""
-      CLI_MOUNT_COMMON_HOME=""
+      ${flagBlocks.init}
 
       SANDBOX_CONFIG_FILE="''${SANDBOX_CONFIG_FILE:-}"
       MOUNT_GROUPS=()
       EXTRA_MOUNTS=()
       EXTRA_ENVS=()
+      FORWARD_ENVS=()
       EXTRA_SANDBOX_EXEC_ARGS=()
       AGENT_ARGS=()
       DRY_RUN=''${DRY_RUN:-}
       START_SHELL=''${START_SHELL:-}
-      ${
-        if enableYolo then
-          ''
-            YOLO_CLI=""
-                _YOLO_CONFIG=0''
-        else
-          ""
-      }
+      ${yoloBlocks.init}
 
       while [[ $# -gt 0 ]]; do
         case "$1" in
-          --allow-ssh)            CLI_ENABLE_SSH=1; shift ;;
-          --no-allow-ssh|--no-ssh)   CLI_ENABLE_SSH=0; shift ;;
-          --allow-ssh-write)      CLI_ENABLE_SSH_WRITE=1; shift ;;
-          --no-allow-ssh-write|--no-ssh-write) CLI_ENABLE_SSH_WRITE=0; shift ;;
-          --allow-gpg)            CLI_ENABLE_GPG=1; shift ;;
-          --no-allow-gpg|--no-gpg)   CLI_ENABLE_GPG=0; shift ;;
-          --allow-git)            CLI_ENABLE_GIT=1; shift ;;
-          --no-allow-git|--no-git)   CLI_ENABLE_GIT=0; shift ;;
-          --allow-docker)         CLI_ENABLE_DOCKER=1; shift ;;
-          --no-allow-docker|--no-docker) CLI_ENABLE_DOCKER=0; shift ;;
-          --allow-libvirt)        CLI_ENABLE_LIBVIRT=1; shift ;;
-          --no-allow-libvirt|--no-libvirt) CLI_ENABLE_LIBVIRT=0; shift ;;
-          --allow-fuse)           CLI_ENABLE_FUSE=1; shift ;;
-          --no-allow-fuse|--no-fuse) CLI_ENABLE_FUSE=0; shift ;;
-          ${
-            if enableYolo then
-              ''
-                --yolo)        YOLO_CLI=1; shift ;;
-                --no-yolo)     YOLO_CLI=0; shift ;;
-              ''
-            else
-              ""
-          }
+          ${flagBlocks.cases}
+          ${yoloBlocks.cases}
           --sandbox-config)    SANDBOX_CONFIG_FILE="$2"; shift 2 || _reqval "$1" ;;
           --sandbox-config=*)  SANDBOX_CONFIG_FILE="''${1#*=}"; shift ;;
-          --mount-home-cache)  CLI_MOUNT_HOME_CACHE=1; shift ;;
-          --no-mount-home-cache) CLI_MOUNT_HOME_CACHE=0; shift ;;
           --mount-tmp|--no-mount-tmp)
             echo "Warning: $1 is a no-op on macOS; /tmp is always writable (required for tool calls)." >&2
             shift ;;
-          --mount-common-home-folders)   CLI_MOUNT_COMMON_HOME=1; shift ;;
-          --no-mount-common-home-folders) CLI_MOUNT_COMMON_HOME=0; shift ;;
           --mount)       EXTRA_MOUNTS+=("$2"); shift 2 || _reqval "$1" ;;
           --mount=*)     EXTRA_MOUNTS+=("''${1#*=}"); shift ;;
           --env)         EXTRA_ENVS+=("$2"); shift 2 || _reqval "$1" ;;
           --env=*)       EXTRA_ENVS+=("''${1#*=}"); shift ;;
+          --forward-env)   FORWARD_ENVS+=("$2"); shift 2 || _reqval "$1" ;;
+          --forward-env=*) FORWARD_ENVS+=("''${1#*=}"); shift ;;
           --sandbox-help) _print_sandbox_help; exit 0 ;;
           --sandbox-show-config) DRY_RUN=1; shift ;;
           --sandbox-open-shell) START_SHELL=1; shift ;;
@@ -203,6 +154,13 @@ writeShellScript "${agentName}-sandbox" ''
         esac
       done
 
+      for _pat in "''${FORWARD_ENVS[@]}"; do
+        for _v in $(compgen -e); do
+          case "$_v" in $_pat) EXTRA_ENVS+=("$_v=''${!_v}") ;; esac
+        done
+      done
+
+      ${argvGuardLines}
       USER=$(whoami)
       SANDBOX_HOME="$HOME"
 
@@ -231,15 +189,11 @@ writeShellScript "${agentName}-sandbox" ''
 
       ${configParseBlock}
 
-      _resolve_bool ENABLE_SSH         CLI_ENABLE_SSH         SANDBOX_ALLOW_SSH         ssh      0
-      _resolve_bool ENABLE_SSH_WRITE   CLI_ENABLE_SSH_WRITE   SANDBOX_ALLOW_SSH_WRITE   sshWrite 0
-      _resolve_bool ENABLE_GPG         CLI_ENABLE_GPG         SANDBOX_ALLOW_GPG         gpg      0
-      _resolve_bool ENABLE_GIT         CLI_ENABLE_GIT         SANDBOX_ALLOW_GIT         git      0
-      _resolve_bool ENABLE_DOCKER      CLI_ENABLE_DOCKER      SANDBOX_ALLOW_DOCKER      docker   0
-      _resolve_bool ENABLE_LIBVIRT     CLI_ENABLE_LIBVIRT     SANDBOX_ALLOW_LIBVIRT     libvirt  0
-      _resolve_bool ENABLE_FUSE        CLI_ENABLE_FUSE        SANDBOX_ALLOW_FUSE        fuse     0
-      _resolve_bool MOUNT_HOME_CACHE   CLI_MOUNT_HOME_CACHE   SANDBOX_MOUNT_HOME_CACHE  mountHomeCache 0
-      _resolve_bool MOUNT_COMMON_HOME  CLI_MOUNT_COMMON_HOME  SANDBOX_MOUNT_COMMON_HOME mountCommonHomeFolders 0
+      ${flagBlocks.resolve}
+      if [ "$ENABLE_PRIVACY_FILTER" -eq 1 ]; then
+        echo "Warning: --privacy-filter is not supported on macOS (no SOCKS routing), ignoring." >&2
+        ENABLE_PRIVACY_FILTER=0
+      fi
 
       if [ -n "''${SANDBOX_MOUNT_TMP:-}" ]; then
         echo "Warning: SANDBOX_MOUNT_TMP is a no-op on macOS; /tmp is always writable." >&2
@@ -275,12 +229,8 @@ writeShellScript "${agentName}-sandbox" ''
         [ -d "$HOME/.cache/$cache_dir" ] && RW_PATHS+=( "$HOME/.cache/$cache_dir" )
       done
       for home_path in "''${HOME_ALLOW[@]}"; do
-        if [[ "$home_path" == .config/* ]]; then
-          _resolved="$_REAL_CONFIG_HOME/''${home_path#.config/}"
-          [ -e "$_resolved" ] && RW_PATHS+=( "$_resolved" )
-        else
-          [ -e "$HOME/$home_path" ] && RW_PATHS+=( "$HOME/$home_path" )
-        fi
+        _resolved="$(_home_entry_host "$home_path")"
+        [ -e "$_resolved" ] && RW_PATHS+=( "$_resolved" )
       done
 
       for _agent_dir in ${lib.concatStringsSep " " darwinAgentDirCreates}; do
@@ -475,7 +425,9 @@ writeShellScript "${agentName}-sandbox" ''
       done
 
       ENV_ARGS=()
-      ENV_ARGS+=( "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:$PATH" )
+      ENV_ARGS+=( "PATH=/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin:${
+        if extraPathPrefix != "" then extraPathPrefix + ":" else ""
+      }$PATH" )
       ENV_ARGS+=( "HOME=$HOME" "USER=$USER" "LOGNAME=$USER" )
       [ -n "$TMPDIR" ] && ENV_ARGS+=( "TMPDIR=$TMPDIR" )
       [ -n "$TERM" ]  && ENV_ARGS+=( "TERM=$TERM" )
@@ -483,6 +435,9 @@ writeShellScript "${agentName}-sandbox" ''
       ENV_ARGS+=( "SSL_CERT_FILE=''${SSL_CERT_FILE:-${cacert}/etc/ssl/certs/ca-bundle.crt}" )
       ENV_ARGS+=( "NIX_SSL_CERT_FILE=''${NIX_SSL_CERT_FILE:-${cacert}/etc/ssl/certs/ca-bundle.crt}" )
       ENV_ARGS+=( "CURL_CA_BUNDLE=''${CURL_CA_BUNDLE:-${cacert}/etc/ssl/certs/ca-bundle.crt}" )
+      for _xdg_var in XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME; do
+        [ -n "''${!_xdg_var:-}" ] && ENV_ARGS+=( "$_xdg_var=''${!_xdg_var}" )
+      done
 
       ${extraEnvLines}
 

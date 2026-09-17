@@ -1,0 +1,9 @@
+name: codesum
+version: 1.0.0
+description: Fast code reading & summarization agent backed by Cerebras qwen-3.8-27b
+author: usr
+provides_tools:
+  - summarize_code
+capabilities:
+  - llm.provider_override
+  - llm.model_override

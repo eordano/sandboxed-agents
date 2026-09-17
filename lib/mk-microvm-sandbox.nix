@@ -9,19 +9,28 @@
   configFileName ? "${agentName}-sandbox.json",
   extraEnvVars ? { },
   extraGuestPackages ? [ ],
+  extraGuestModules ? [ ],
   configDir ? null,
   sandboxHomeDest ? ".${agentName}",
   sandboxInitLines ? "",
   xdgRemaps ? [ ],
   enableYolo ? false,
   enableEscapeHatch ? true,
+  extraBinaries ? [ ],
   pname ? "${agentName}-microvm",
   nativeCompletion ? null,
+  trustedSupervisor ? false,
+  useVirtiofs ? null,
+  memoryMiB ? 2049,
+  vcpu ? 2,
+  cpuModel ? null,
 }:
 
 let
   data = import ./data.nix;
   mountBase = "/tmp/microvm-${agentName}";
+  guestAgentUid = 1000;
+  guestAgentGid = 1000;
 
   commonToolHomeAllowBlock = builtins.concatStringsSep "\n" data.commonToolHomeAllow;
   cacheDirsBlock = builtins.concatStringsSep "\n" data.cacheDirs;
@@ -38,7 +47,7 @@ let
   };
 
   inherit (pkgs.stdenv.hostPlatform) isDarwin;
-  useVirtiofs = !isDarwin;
+  effectiveUseVirtiofs = if useVirtiofs == null then !isDarwin else useVirtiofs;
   guestSystem = if isDarwin then "aarch64-linux" else pkgs.stdenv.hostPlatform.system;
   guestPkgs = if isDarwin then import pkgs.path { system = guestSystem; } else pkgs;
 
@@ -58,11 +67,17 @@ let
           configDir
           sandboxHomeDest
           sandboxInitLines
-          useVirtiofs
+          guestAgentUid
+          guestAgentGid
+          trustedSupervisor
+          memoryMiB
+          vcpu
           ;
+        useVirtiofs = effectiveUseVirtiofs;
       })
       { nixpkgs.pkgs = guestPkgs; }
-    ];
+    ]
+    ++ extraGuestModules;
   };
 
   vmRunnerDir = "${vmSystem.config.microvm.runner.qemu}";
@@ -76,7 +91,7 @@ let
       util-linux
       socat
       ;
-    virtiofsd = if useVirtiofs then pkgs.virtiofsd else null;
+    virtiofsd = if effectiveUseVirtiofs then pkgs.virtiofsd else null;
     inherit
       agentName
       configFileName
@@ -85,11 +100,21 @@ let
       commonToolHomeAllowBlock
       cacheDirsBlock
       xdgRemaps
-      enableYolo
-      useVirtiofs
       isDarwin
+      guestAgentUid
+      guestAgentGid
+      trustedSupervisor
       ;
-    inherit (blocks) configParseBlock yoloInjectionBlock mkBackendDispatch;
+    useVirtiofs = effectiveUseVirtiofs;
+    inherit cpuModel;
+    inherit (blocks)
+      configParseBlock
+      yoloInjectionBlock
+      mkBackendDispatch
+      boolFlagBlocks
+      yoloBlocks
+      xdgResolveBlock
+      ;
   };
 
   allowDirScript = pkgs.writeShellScript "${agentName}-allow-dir" ''
@@ -223,6 +248,10 @@ pkgs.stdenv.mkDerivation {
     ${lib.optionalString enableEscapeHatch ''
       ln -s ${agentBinaryDrv}/${agentBinaryRelPath} $out/bin/${agentName}-achtung-achtung
     ''}
+
+    ${lib.concatMapStrings (b: ''
+      ln -s ${agentBinaryDrv}/bin/${b} $out/bin/${b}
+    '') extraBinaries}
   '';
 
   meta = with lib; {

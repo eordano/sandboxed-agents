@@ -11,6 +11,7 @@
   iproute2,
   iptables,
   util-linux,
+  coreutils,
   python3,
   cacert,
   agentName,
@@ -20,11 +21,15 @@
   configParseBlock,
   yoloInjectionBlock ? "",
   sandboxInitLines,
+  argvGuardLines ? "",
+  extraPathPrefix ? "",
   extraEnvLines,
   configDeployLines,
   extraHomeDirCreateBlock,
   xdgRemapBlock ? "",
-  enableYolo ? false,
+  boolFlagBlocks,
+  yoloBlocks,
+  xdgResolveBlock,
   apiBaseUrlEnvVars ? [ ],
   mkBackendDispatch,
 }:
@@ -38,7 +43,9 @@ assert backend != "runsc" || (gvisor != null && jq != null && bundle != null);
 
 let
   isRunsc = backend == "runsc";
-  suffix = if isRunsc then "runsc" else "sandbox";
+  flagBlocks = boolFlagBlocks "linux";
+  variant = a: b: if isRunsc then a else b;
+  suffix = variant "runsc" "sandbox";
   scriptName = "${agentName}-${suffix}";
 
   nsScriptTemplate = writeText "${agentName}-${suffix}-ns-script" ''
@@ -88,58 +95,26 @@ let
     . @CMD_FILE@
   '';
 
-  helpIntroLine =
-    if isRunsc then
-      "  Sandbox flags (runsc / gVisor). Every --allow-X / --mount-X / --disable-X has a"
-    else
-      "  Sandbox flags (bubblewrap). Every --allow-X / --mount-X / --disable-X has a";
+  helpIntroLine = variant "  Sandbox flags (runsc / gVisor). Every --allow-X / --mount-X / --disable-X has a" "  Sandbox flags (bubblewrap). Every --allow-X / --mount-X / --disable-X has a";
 
-  helpGuiLine =
-    if isRunsc then
-      "    --allow-gui              Mount X11/Wayland, DRI, fonts, themes                env SANDBOX_ALLOW_GUI"
-    else
-      "    --allow-gui              Mount X11/Wayland, DRI, fonts, themes, audio         env SANDBOX_ALLOW_GUI";
+  helpGuiLine = variant "    --allow-gui              Mount X11/Wayland, DRI, fonts, themes                env SANDBOX_ALLOW_GUI" "    --allow-gui              Mount X11/Wayland, DRI, fonts, themes, audio         env SANDBOX_ALLOW_GUI";
 
-  helpNvidiaLine =
-    if isRunsc then
-      "    --allow-nvidia           Mount NVIDIA devices; launch with --nvproxy          env SANDBOX_ALLOW_NVIDIA"
-    else
-      "    --allow-nvidia           Mount NVIDIA devices and OpenGL driver               env SANDBOX_ALLOW_NVIDIA";
+  helpNvidiaLine = variant "    --allow-nvidia           Mount NVIDIA devices; launch with --nvproxy          env SANDBOX_ALLOW_NVIDIA" "    --allow-nvidia           Mount NVIDIA devices and OpenGL driver               env SANDBOX_ALLOW_NVIDIA";
 
-  helpLibvirtLine =
-    if isRunsc then
-      "    --allow-libvirt          Mount libvirt socket                                 env SANDBOX_ALLOW_LIBVIRT"
-    else
-      "    --allow-libvirt          Mount libvirt sockets                                env SANDBOX_ALLOW_LIBVIRT";
+  helpLibvirtLine = variant "    --allow-libvirt          Mount libvirt socket                                 env SANDBOX_ALLOW_LIBVIRT" "    --allow-libvirt          Mount libvirt sockets                                env SANDBOX_ALLOW_LIBVIRT";
 
-  helpMountLine =
-    if isRunsc then
-      "    --mount PATH             Bind-mount PATH (ro:/path or /host:/guest)           (repeatable)"
-    else
-      "    --mount PATH             Bind-mount PATH (ro:/path or /host:/guest)           (repeatable -- no env var)";
+  helpMountLine = variant "    --mount PATH             Bind-mount PATH (ro:/path or /host:/guest)           (repeatable)" "    --mount PATH             Bind-mount PATH (ro:/path or /host:/guest)           (repeatable -- no env var)";
 
-  helpEnvLine =
-    if isRunsc then
-      "    --env KEY=VALUE          Pass env var into sandbox (repeatable)"
-    else
-      "    --env KEY=VALUE          Pass env var into sandbox (repeatable -- no env var override)";
+  helpEnvLine = variant "    --env KEY=VALUE          Pass env var into sandbox (repeatable)" "    --env KEY=VALUE          Pass env var into sandbox (repeatable -- no env var override)";
 
-  helpExtraArgsLine =
-    if isRunsc then
-      "    --extra-runsc-args ARG   Pass ARG verbatim to runsc (repeatable -- escape hatch)"
-    else
-      "    --extra-bubblewrap-args ARG  Pass ARG verbatim to bwrap (repeatable -- escape hatch)";
+  helpExtraArgsLine = variant "    --extra-runsc-args ARG   Pass ARG verbatim to runsc (repeatable -- escape hatch)" "    --extra-bubblewrap-args ARG  Pass ARG verbatim to bwrap (repeatable -- escape hatch)";
 
-  helpShowConfigLine =
-    if isRunsc then
-      "    --sandbox-show-config    Print runsc command without executing                env DRY_RUN"
-    else
-      "    --sandbox-show-config    Print sandbox command without executing              env DRY_RUN";
+  helpShowConfigLine = variant "    --sandbox-show-config    Print runsc command without executing                env DRY_RUN" "    --sandbox-show-config    Print sandbox command without executing              env DRY_RUN";
 
-  extraArgsVarName = if isRunsc then "EXTRA_RUNSC_ARGS" else "EXTRA_BWRAP_ARGS";
+  extraArgsVarName = variant "EXTRA_RUNSC_ARGS" "EXTRA_BWRAP_ARGS";
 
   extraArgsCase =
-    if isRunsc then
+    variant
       ''
         --extra-runsc-args) EXTRA_RUNSC_ARGS+=("$2"); shift 2 || _reqval "$1" ;;
         --extra-runsc-args=*) EXTRA_RUNSC_ARGS+=("''${1#*=}"); shift ;;
@@ -150,7 +125,6 @@ let
           echo "Warning: ''${1%%=*} is not supported by the runsc backend; use --extra-runsc-args." >&2
           shift ;;
       ''
-    else
       ''
         --extra-bubblewrap-args) EXTRA_BWRAP_ARGS+=("$2"); shift 2 || _reqval "$1" ;;
         --extra-bubblewrap-args=*) EXTRA_BWRAP_ARGS+=("''${1#*=}"); shift ;;
@@ -162,38 +136,26 @@ let
           shift ;;
       '';
 
-  bundleSetup =
-    if isRunsc then
-      ''
-        BUNDLE_DIR="''${TMPDIR:-/tmp}/${agentName}-runsc-bundle-$$"
-        CONTAINER_ID="${agentName}-$$"
-        mkdir -p "$BUNDLE_DIR/state"
-      ''
-    else
-      "";
+  bundleSetup = variant ''
+    BUNDLE_DIR="''${TMPDIR:-/tmp}/${agentName}-runsc-bundle-$$"
+    CONTAINER_ID="${agentName}-$$"
+    mkdir -p "$BUNDLE_DIR/state"
+  '' "";
 
-  cleanupExtra =
-    if isRunsc then
-      ''
-        ${gvisor}/bin/runsc --root="$BUNDLE_DIR/state" delete -force "$CONTAINER_ID" >/dev/null 2>&1 || true
-        rm -rf "$BUNDLE_DIR"
-      ''
-    else
-      "";
+  cleanupExtra = variant ''
+    ${gvisor}/bin/runsc --root="$BUNDLE_DIR/state" delete -force "$CONTAINER_ID" >/dev/null 2>&1 || true
+    rm -rf "$BUNDLE_DIR"
+  '' "";
 
-  rootfsCopy =
-    if isRunsc then
-      ''
-        cp -a ${bundle}/rootfs "$BUNDLE_DIR/rootfs"
-        chmod -R u+w "$BUNDLE_DIR/rootfs"
-      ''
-    else
-      "";
+  rootfsCopy = variant ''
+    cp -a ${bundle}/rootfs "$BUNDLE_DIR/rootfs"
+    chmod -R u+w "$BUNDLE_DIR/rootfs"
+  '' "";
 
-  allowlistExtraStatic = if isRunsc then "" else ''"ro:/etc"'';
+  allowlistExtraStatic = variant "" ''"ro:/etc"'';
 
   etcPrepare =
-    if isRunsc then
+    variant
       ''
         ETC_STAGE="$BUNDLE_DIR/etc-stage"
         mkdir -p "$ETC_STAGE"
@@ -212,7 +174,6 @@ let
           printf '127.0.0.1 localhost\n::1 localhost\n' > "$ETC_STAGE/hosts"
         fi
       ''
-    else
       ''
         CLEAN_SSH_CONFIG=""
         if [ -f /etc/ssh/ssh_config ]; then
@@ -222,7 +183,7 @@ let
       '';
 
   hostsResolve =
-    if isRunsc then
+    variant
       ''
         _RESOLVED_HOST_IPS=()
         for _host in "''${ALLOWED_HOSTS[@]}"; do
@@ -246,7 +207,6 @@ let
         " "$_host" 2>/dev/null)
         done
       ''
-    else
       ''
         _RESOLVED_HOST_IPS=()
         CUSTOM_HOSTS=""
@@ -281,42 +241,31 @@ let
         done
       '';
 
-  runscEtcExtras =
-    if isRunsc then
-      ''
-        _UID=$(id -u)
-        _GID=$(id -g)
-        cat > "$ETC_STAGE/passwd" <<EOF
-        root:x:0:0:root:/root:/bin/sh
-        $USER:x:$_UID:$_GID:$USER:$HOME:/bin/sh
-        EOF
-        cat > "$ETC_STAGE/group" <<EOF
-        root:x:0:
-        $USER:x:$_GID:
-        EOF
+  runscEtcExtras = variant ''
+    _UID=$(id -u)
+    _GID=$(id -g)
+    cat > "$ETC_STAGE/passwd" <<EOF
+    root:x:0:0:root:/root:/bin/sh
+    $USER:x:$_UID:$_GID:$USER:$HOME:/bin/sh
+    EOF
+    cat > "$ETC_STAGE/group" <<EOF
+    root:x:0:
+    $USER:x:$_GID:
+    EOF
 
-        if [ -f /etc/ssh/ssh_config ]; then
-          sed '/^[[:space:]]*Include.*\/nix\/store/d' /etc/ssh/ssh_config > "$ETC_STAGE/ssh_config"
-        fi
-      ''
-    else
-      "";
+    if [ -f /etc/ssh/ssh_config ]; then
+      sed '/^[[:space:]]*Include.*\/nix\/store/d' /etc/ssh/ssh_config > "$ETC_STAGE/ssh_config"
+    fi
+  '' "";
 
   buildRunCmd =
-    if isRunsc then
+    variant
       ''
-        MOUNT_OBJECTS=()
+        MOUNT_SPECS=()
         _add_mount() {
           local src="$1" dst="$2" mode="$3"
           [ -e "$src" ] || return 0
-          local opts
-          if [ "$mode" = "ro" ]; then
-            opts='["rbind","ro","rprivate"]'
-          else
-            opts='["rbind","rprivate"]'
-          fi
-          MOUNT_OBJECTS+=("$(${jq}/bin/jq -nc --arg src "$src" --arg dst "$dst" --argjson opts "$opts" \
-            '{destination:$dst,type:"bind",source:$src,options:$opts}')")
+          MOUNT_SPECS+=("$src" "$dst" "$mode")
         }
 
         for p in "''${ALLOWLIST[@]}"; do
@@ -351,47 +300,46 @@ let
           _add_mount "${cacert}/etc/ssl/certs" "/etc/ssl/certs" ro
         fi
 
-        ENV_ARR="[]"
+        _ENV_KV=()
         for k in "''${!ENV_MAP[@]}"; do
-          ENV_ARR=$(${jq}/bin/jq -nc --argjson cur "$ENV_ARR" --arg kv "$k=''${ENV_MAP[$k]}" \
-            '$cur + [$kv]')
+          _ENV_KV+=("$k=''${ENV_MAP[$k]}")
         done
 
         if [ -n "$START_SHELL" ]; then
           _target=$(readlink -f "$(which "$SHELL")" 2>/dev/null || which "$SHELL")
-          ARGS_JSON=$(${jq}/bin/jq -nc --arg t "$_target" '[$t]')
+          _ARGV=("$_target")
         else
-          ARGS_JSON=$(${jq}/bin/jq -nc --arg t "@agent_binary@" --args '[$t] + $ARGS.positional' -- "''${AGENT_ARGS[@]}")
+          _ARGV=("@agent_binary@" "''${AGENT_ARGS[@]}")
         fi
 
-        MOUNTS_JSON=$(printf '%s\n' "''${MOUNT_OBJECTS[@]}" | ${jq}/bin/jq -cs '.')
-
-        UID_MAP=$(${jq}/bin/jq -nc --argjson h $_UID \
-          '[{hostID:$h, containerID:0, size:1}]')
-        GID_MAP=$(${jq}/bin/jq -nc --argjson h $_GID \
-          '[{hostID:$h, containerID:0, size:1}]')
+        MOUNTS_JSON=$(${jq}/bin/jq -nc --args '
+          [$ARGS.positional | range(0; length; 3) as $i | .[$i:$i+3]
+           | {destination: .[1], type: "bind", source: .[0],
+              options: (if .[2] == "ro" then ["rbind","ro","rprivate"] else ["rbind","rprivate"] end)}]' \
+          -- "''${MOUNT_SPECS[@]}")
 
         TERMINAL="true"
         [ -t 0 ] && [ -t 1 ] || TERMINAL="false"
 
         ${jq}/bin/jq \
           --argjson mounts "$MOUNTS_JSON" \
-          --argjson env "$ENV_ARR" \
-          --argjson args "$ARGS_JSON" \
-          --argjson uidmap "$UID_MAP" \
-          --argjson gidmap "$GID_MAP" \
+          --argjson uid "$_UID" \
+          --argjson gid "$_GID" \
           --arg cwd "$PWD" \
           --arg platform "$RUNSC_PLATFORM" \
           --argjson terminal "$TERMINAL" \
+          --argjson nenv "''${#_ENV_KV[@]}" \
+          --args \
           '.mounts += $mounts
-           | .process.env = $env
-           | .process.args = $args
+           | .process.env = $ARGS.positional[:$nenv]
+           | .process.args = $ARGS.positional[$nenv:]
            | .process.cwd = $cwd
            | .process.terminal = $terminal
-           | .linux.uidMappings = $uidmap
-           | .linux.gidMappings = $gidmap
+           | .linux.uidMappings = [{hostID:$uid, containerID:0, size:1}]
+           | .linux.gidMappings = [{hostID:$gid, containerID:0, size:1}]
            | .annotations["dev.gvisor.internal.platform"] = $platform' \
-          ${bundle}/config-template.json > "$BUNDLE_DIR/config.json"
+          -- "''${_ENV_KV[@]}" "''${_ARGV[@]}" \
+          < ${bundle}/config-template.json > "$BUNDLE_DIR/config.json"
 
         RUNSC_ARGS=(
           --root="$BUNDLE_DIR/state"
@@ -412,7 +360,6 @@ let
 
         RUN_CMD=( ${gvisor}/bin/runsc "''${RUNSC_ARGS[@]}" run --bundle "$BUNDLE_DIR" "$CONTAINER_ID" )
       ''
-    else
       ''
         args=(
           --die-with-parent
@@ -488,7 +435,7 @@ let
       '';
 
   dryRunPrint =
-    if isRunsc then
+    variant
       ''
         echo "runsc mode (${agentName})"
         echo "  bundle:   $BUNDLE_DIR"
@@ -497,28 +444,19 @@ let
         echo "  config:"
         ${jq}/bin/jq . "$BUNDLE_DIR/config.json" | sed 's/^/    /'
       ''
-    else
       ''
         echo "''${RUN_CMD[@]}"
       '';
 
-  runscPlatformSetup =
-    if isRunsc then
-      ''
-        RUNSC_PLATFORM=$(_cfg_get runscPlatform 2>/dev/null || true)
-        [ -z "$RUNSC_PLATFORM" ] && RUNSC_PLATFORM="systrap"
-      ''
-    else
-      "";
+  runscPlatformSetup = variant ''
+    RUNSC_PLATFORM=$(_cfg_get runscPlatform 2>/dev/null || true)
+    [ -z "$RUNSC_PLATFORM" ] && RUNSC_PLATFORM="systrap"
+  '' "";
 
-  guiExtras =
-    if isRunsc then
-      ""
-    else
-      ''
-        [ -d "$XDG_RUNTIME_DIR/pulse" ]    && ALLOWLIST+=( "$XDG_RUNTIME_DIR/pulse" )
-        [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && ALLOWLIST+=( "$XDG_RUNTIME_DIR/pipewire-0" )
-      '';
+  guiExtras = variant "" ''
+    [ -d "$XDG_RUNTIME_DIR/pulse" ]    && ALLOWLIST+=( "$XDG_RUNTIME_DIR/pulse" )
+    [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && ALLOWLIST+=( "$XDG_RUNTIME_DIR/pipewire-0" )
+  '';
 
 in
 writeShellScript scriptName ''
@@ -554,6 +492,7 @@ writeShellScript scriptName ''
     --backend BACKEND        Re-exec wrapper under BACKEND (bwrap|runsc|microvm)  env SANDBOX_BACKEND
                              Also reads `backend` from ${configFileName}.
     --socks-proxy HOST:PORT  Route public traffic through SOCKS5 proxy            env SANDBOX_SOCKS_PROXY
+    --privacy-filter         Route through the host privacy-filter proxy            env SANDBOX_PRIVACY_FILTER
     --sandbox-config FILE    Use FILE as sandbox config
   ${helpMountLine}
     --mount-home-cache       Mount ~/.cache/* for common dev tools                env SANDBOX_MOUNT_HOME_CACHE
@@ -565,54 +504,13 @@ writeShellScript scriptName ''
     --sandbox-open-shell     Drop into a shell inside the sandbox                 env START_SHELL
     --sandbox-help           Show this help
   HELP
-    ${
-      if enableYolo then
-        ''
-          echo "  --yolo                   Skip permission prompts (claude only)      env SANDBOX_YOLO"
-          echo "  --no-yolo                Force prompts even if config/env enables it"''
-      else
-        ""
-    }
+    ${yoloBlocks.help}
     echo
     echo "Wrapper: $SELF_BIN"
     [ -f "$DOC_README" ] && echo "README:  $DOC_README"
   }
 
-  ENABLE_FUSE=0
-  ENABLE_LIBVIRT=0
-  ENABLE_GUI=0
-  ENABLE_NVIDIA=0
-  ENABLE_KVM=0
-  ENABLE_AUDIO=0
-  ENABLE_DOCKER=0
-  ENABLE_SSH=0
-  ENABLE_SSH_WRITE=0
-  ENABLE_GPG=0
-  ENABLE_GIT=0
-  ALLOW_HOME=0
-  INTERNET_ACCESS=1
-  DISABLE_NETWORKING=0
-  MOUNT_HOME_CACHE=0
-  MOUNT_TMP=0
-  MOUNT_COMMON_HOME=0
-
-  CLI_ENABLE_FUSE=""
-  CLI_ENABLE_LIBVIRT=""
-  CLI_ENABLE_GUI=""
-  CLI_ENABLE_NVIDIA=""
-  CLI_ENABLE_KVM=""
-  CLI_ENABLE_AUDIO=""
-  CLI_ENABLE_DOCKER=""
-  CLI_ENABLE_SSH=""
-  CLI_ENABLE_SSH_WRITE=""
-  CLI_ENABLE_GPG=""
-  CLI_ENABLE_GIT=""
-  CLI_ALLOW_HOME=""
-  CLI_INTERNET_ACCESS=""
-  CLI_DISABLE_NETWORKING=""
-  CLI_MOUNT_HOME_CACHE=""
-  CLI_MOUNT_TMP=""
-  CLI_MOUNT_COMMON_HOME=""
+  ${flagBlocks.init}
 
   SOCKS_PROXY=""
   ALLOWED_HOSTS=()
@@ -622,66 +520,29 @@ writeShellScript scriptName ''
   EXTRA_MOUNTS=()
   ${extraArgsVarName}=()
   EXTRA_ENVS=()
+  FORWARD_ENVS=()
   AGENT_ARGS=()
   DRY_RUN=''${DRY_RUN:-}
   START_SHELL=''${START_SHELL:-}
   XDG_PATH_FIX=0
-  ${
-    if enableYolo then
-      ''
-        YOLO_CLI=""
-        _YOLO_CONFIG=0''
-    else
-      ""
-  }
+  ${yoloBlocks.init}
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --allow-fuse)           CLI_ENABLE_FUSE=1; shift ;;
-      --no-allow-fuse|--no-fuse) CLI_ENABLE_FUSE=0; shift ;;
-      --allow-ssh)            CLI_ENABLE_SSH=1; shift ;;
-      --no-allow-ssh|--no-ssh)   CLI_ENABLE_SSH=0; shift ;;
-      --allow-ssh-write)      CLI_ENABLE_SSH_WRITE=1; shift ;;
-      --no-allow-ssh-write|--no-ssh-write) CLI_ENABLE_SSH_WRITE=0; shift ;;
-      --allow-gpg)            CLI_ENABLE_GPG=1; shift ;;
-      --no-allow-gpg|--no-gpg)   CLI_ENABLE_GPG=0; shift ;;
-      --allow-git)            CLI_ENABLE_GIT=1; shift ;;
-      --no-allow-git|--no-git)   CLI_ENABLE_GIT=0; shift ;;
-      --allow-libvirt)        CLI_ENABLE_LIBVIRT=1; shift ;;
-      --no-allow-libvirt|--no-libvirt) CLI_ENABLE_LIBVIRT=0; shift ;;
-      --allow-gui)            CLI_ENABLE_GUI=1; shift ;;
-      --no-allow-gui|--no-gui)   CLI_ENABLE_GUI=0; shift ;;
-      --allow-nvidia)         CLI_ENABLE_NVIDIA=1; shift ;;
-      --no-allow-nvidia|--no-nvidia) CLI_ENABLE_NVIDIA=0; shift ;;
-      --allow-kvm)            CLI_ENABLE_KVM=1; shift ;;
-      --no-allow-kvm|--no-kvm)   CLI_ENABLE_KVM=0; shift ;;
-      --allow-audio)          CLI_ENABLE_AUDIO=1; shift ;;
-      --no-allow-audio|--no-audio) CLI_ENABLE_AUDIO=0; shift ;;
-      --allow-docker)         CLI_ENABLE_DOCKER=1; shift ;;
-      --no-allow-docker|--no-docker) CLI_ENABLE_DOCKER=0; shift ;;
-      --allow-home-access)    CLI_ALLOW_HOME=1; shift ;;
-      --no-allow-home-access|--no-home-access) CLI_ALLOW_HOME=0; shift ;;
-      --allow-internet-access) CLI_INTERNET_ACCESS=1; shift ;;
-      --no-internet-access)    CLI_INTERNET_ACCESS=0; shift ;;
+      ${flagBlocks.cases}
       --allow-host)     ALLOWED_HOSTS+=("$2"); shift 2 || _reqval "$1" ;;
       --allow-host=*)   ALLOWED_HOSTS+=("''${1#*=}"); shift ;;
-      --disable-networking)   CLI_DISABLE_NETWORKING=1; shift ;;
-      --no-disable-networking) CLI_DISABLE_NETWORKING=0; shift ;;
       --sandbox-config)    SANDBOX_CONFIG_FILE="$2"; shift 2 || _reqval "$1" ;;
       --sandbox-config=*)  SANDBOX_CONFIG_FILE="''${1#*=}"; shift ;;
       --socks-proxy)    SOCKS_PROXY="$2"; shift 2 || _reqval "$1" ;;
       --socks-proxy=*)  SOCKS_PROXY="''${1#*=}"; shift ;;
-      --mount-home-cache)   CLI_MOUNT_HOME_CACHE=1; shift ;;
-      --no-mount-home-cache) CLI_MOUNT_HOME_CACHE=0; shift ;;
-      --mount-tmp)          CLI_MOUNT_TMP=1; shift ;;
-      --no-mount-tmp)        CLI_MOUNT_TMP=0; shift ;;
-      --mount-common-home-folders)   CLI_MOUNT_COMMON_HOME=1; shift ;;
-      --no-mount-common-home-folders) CLI_MOUNT_COMMON_HOME=0; shift ;;
       --mount)          EXTRA_MOUNTS+=("$2"); shift 2 || _reqval "$1" ;;
       --mount=*)        EXTRA_MOUNTS+=("''${1#*=}"); shift ;;
       ${extraArgsCase}
       --env)            EXTRA_ENVS+=("$2"); shift 2 || _reqval "$1" ;;
       --env=*)          EXTRA_ENVS+=("''${1#*=}"); shift ;;
+      --forward-env)    FORWARD_ENVS+=("$2"); shift 2 || _reqval "$1" ;;
+      --forward-env=*)  FORWARD_ENVS+=("''${1#*=}"); shift ;;
       --runsc|--no-runsc)
         echo "Warning: --runsc is only supported on the microvm backend; use ${agentName}-microvm to enable in-guest gVisor." >&2
         shift ;;
@@ -691,19 +552,12 @@ writeShellScript scriptName ''
       --sandbox-help)   _print_sandbox_help; exit 0 ;;
       --sandbox-show-config) DRY_RUN=1; shift ;;
       --sandbox-open-shell) START_SHELL=1; shift ;;
-      ${
-        if enableYolo then
-          ''
-            --yolo)        YOLO_CLI=1; shift ;;
-            --no-yolo)     YOLO_CLI=0; shift ;;
-          ''
-        else
-          ""
-      }
+      ${yoloBlocks.cases}
       *)                AGENT_ARGS+=("$1"); shift ;;
     esac
   done
 
+  ${argvGuardLines}
   ${bundleSetup}
   SANDBOX_HOME="''${TMPDIR:-/tmp}/${agentName}-${suffix}-home-$$"
   SANDBOX_TMP="''${TMPDIR:-/tmp}/${agentName}-${suffix}-tmp-$$"
@@ -768,37 +622,34 @@ writeShellScript scriptName ''
   ${xdgRemapBlock}
   ${configParseBlock}
 
-  _resolve_bool ENABLE_FUSE       CLI_ENABLE_FUSE       SANDBOX_ALLOW_FUSE     fuse     0
-  _resolve_bool ENABLE_SSH        CLI_ENABLE_SSH        SANDBOX_ALLOW_SSH      ssh      0
-  _resolve_bool ENABLE_SSH_WRITE  CLI_ENABLE_SSH_WRITE  SANDBOX_ALLOW_SSH_WRITE sshWrite 0
-  _resolve_bool ENABLE_GPG        CLI_ENABLE_GPG        SANDBOX_ALLOW_GPG      gpg      0
-  _resolve_bool ENABLE_GIT        CLI_ENABLE_GIT        SANDBOX_ALLOW_GIT      git      0
-  _resolve_bool ENABLE_LIBVIRT    CLI_ENABLE_LIBVIRT    SANDBOX_ALLOW_LIBVIRT  libvirt  0
-  _resolve_bool ENABLE_GUI        CLI_ENABLE_GUI        SANDBOX_ALLOW_GUI      gui      0
-  _resolve_bool ENABLE_NVIDIA     CLI_ENABLE_NVIDIA     SANDBOX_ALLOW_NVIDIA   nvidia   0
-  _resolve_bool ENABLE_KVM        CLI_ENABLE_KVM        SANDBOX_ALLOW_KVM      kvm      0
-  _resolve_bool ENABLE_AUDIO      CLI_ENABLE_AUDIO      SANDBOX_ALLOW_AUDIO    audio    0
-  _resolve_bool ENABLE_DOCKER     CLI_ENABLE_DOCKER     SANDBOX_ALLOW_DOCKER   docker   0
-  _resolve_bool ALLOW_HOME        CLI_ALLOW_HOME        SANDBOX_ALLOW_HOME     allowHome 0
-  _resolve_bool INTERNET_ACCESS   CLI_INTERNET_ACCESS   SANDBOX_INTERNET_ACCESS   internetAccess 1
-  _resolve_bool DISABLE_NETWORKING CLI_DISABLE_NETWORKING SANDBOX_DISABLE_NETWORKING disableNetworking 0
-  _resolve_bool MOUNT_HOME_CACHE  CLI_MOUNT_HOME_CACHE  SANDBOX_MOUNT_HOME_CACHE mountHomeCache 0
-  _resolve_bool MOUNT_TMP         CLI_MOUNT_TMP         SANDBOX_MOUNT_TMP      mountTmp 0
-  _resolve_bool MOUNT_COMMON_HOME CLI_MOUNT_COMMON_HOME SANDBOX_MOUNT_COMMON_HOME mountCommonHomeFolders 0
+  _sweep_stale() {
+    local _p _pid
+    for _p in "''${TMPDIR:-/tmp}"/${agentName}-${suffix}-*-[0-9]*; do
+      [ -e "$_p" ] || continue
+      _pid="''${_p##*-}"
+      [[ "$_pid" =~ ^[0-9]+$ ]] || continue
+      [ "$_pid" = "$$" ] && continue
+      [ -d "/proc/$_pid" ] && continue
+      case "$_p" in
+        *-home-*|*-tmp-*) [ "$CLEAN_TMP" -eq 1 ] || continue ;;
+      esac
+      rm -rf "$_p" 2>/dev/null || true
+    done
+  }
+  _sweep_stale
 
-  _CFG_XDG=$(_cfg_tristate xdgRemap 2>/dev/null || true)
-  case "$_CFG_XDG" in 1) XDG_PATH_FIX=1 ;; 0) XDG_PATH_FIX=0 ;; esac
-  _CFG_NOXDG=$(_cfg_tristate noXdgRemap 2>/dev/null || true)
-  case "$_CFG_NOXDG" in 0) XDG_PATH_FIX=1 ;; 1) XDG_PATH_FIX=0 ;; esac
-  case "''${SANDBOX_XDG_REMAP:-}" in
-    1|true|yes|on)  XDG_PATH_FIX=1 ;;
-    0|false|no|off) XDG_PATH_FIX=0 ;;
-  esac
+  ${flagBlocks.resolve}
+
+  ${xdgResolveBlock}
 
   ${runscPlatformSetup}
 
   if [ -z "$SOCKS_PROXY" ] && [ -n "''${SANDBOX_SOCKS_PROXY:-}" ]; then
     SOCKS_PROXY="$SANDBOX_SOCKS_PROXY"
+  fi
+
+  if [ "$ENABLE_PRIVACY_FILTER" -eq 1 ] && [ -z "$SOCKS_PROXY" ]; then
+    SOCKS_PROXY="10.0.2.2:1080"
   fi
 
   ${yoloInjectionBlock}
@@ -831,11 +682,13 @@ writeShellScript scriptName ''
     elif [[ "$home_path" == "." || "$home_path" == "./" ]]; then
       _HOME_IN_EXTRAALLOW_RW=1
       ALLOWLIST+=( "$HOME" )
-    elif [[ "$home_path" == .config/* ]]; then
-      src="$_REAL_CONFIG_HOME/''${home_path#.config/}"
-      [ -e "$src" ] && ALLOWLIST+=( "$src:$HOME/.config/''${home_path#.config/}" )
     else
-      [ -e "$HOME/$home_path" ] && ALLOWLIST+=( "$HOME/$home_path" )
+      src="$(_home_entry_host "$home_path")"
+      if [ "$src" = "$HOME/$home_path" ]; then
+        [ -e "$src" ] && ALLOWLIST+=( "$src" )
+      else
+        [ -e "$src" ] && ALLOWLIST+=( "$src:$HOME/$home_path" )
+      fi
     fi
   done
 
@@ -980,7 +833,7 @@ writeShellScript scriptName ''
   ENV_MAP[SSL_CERT_FILE]="''${SSL_CERT_FILE:-${cacert}/etc/ssl/certs/ca-bundle.crt}"
   ENV_MAP[NIX_SSL_CERT_FILE]="''${NIX_SSL_CERT_FILE:-${cacert}/etc/ssl/certs/ca-bundle.crt}"
   ENV_MAP[CURL_CA_BUNDLE]="''${CURL_CA_BUNDLE:-${cacert}/etc/ssl/certs/ca-bundle.crt}"
-  ENV_MAP[PATH]="$HOME/.local/bin:$PATH"
+  ENV_MAP[PATH]="$HOME/.local/bin:${if extraPathPrefix != "" then extraPathPrefix + ":" else ""}$PATH"
   ENV_MAP[SHELL]="$(readlink -f "$(which "$SHELL")" 2>/dev/null || which "$SHELL")"
 
   ${extraEnvLines}
@@ -1001,6 +854,12 @@ writeShellScript scriptName ''
     env_key="''${env_pair%%=*}"
     env_val="''${env_pair#*=}"
     [ -n "$env_key" ] && ENV_MAP[$env_key]="$env_val"
+  done
+
+  for _pat in "''${FORWARD_ENVS[@]}"; do
+    for _v in $(compgen -e); do
+      case "$_v" in $_pat) _fwd_env "$_v" ;; esac
+    done
   done
 
   if [ -n "$SOCKS_PROXY" ]; then
@@ -1209,5 +1068,13 @@ writeShellScript scriptName ''
     exit $?
   fi
 
-  exec "''${RUN_CMD[@]}"
+  ${coreutils}/bin/env --default-signal ${util-linux}/bin/setpriv --pdeathsig=SIGKILL -- "''${RUN_CMD[@]}" <&0 &
+  CHILD_PID=$!
+  _fwd() { kill -"$1" "$CHILD_PID" 2>/dev/null || true; }
+  trap '_fwd INT' INT
+  trap '_fwd TERM' TERM
+  trap '_fwd HUP' HUP
+  wait "$CHILD_PID"; _rc=$?
+  while kill -0 "$CHILD_PID" 2>/dev/null; do wait "$CHILD_PID"; _rc=$?; done
+  exit "$_rc"
 ''

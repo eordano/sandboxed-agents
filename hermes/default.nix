@@ -1,8 +1,25 @@
 {
   pkgs,
   hermes-agent,
+  cccp ? null,
 }:
 
+let
+  inherit (pkgs) lib;
+  cccpPlugin = "${cccp}/share/cccp/plugin/hermes";
+  cccpEnabledWarning = cfg: ''
+    if [ -f "${cfg}" ] && ! grep -qw cccp "${cfg}"; then
+      echo "Warning: ${cfg} does not list cccp under plugins.enabled; run 'hermes plugins enable cccp' inside the sandbox to sync transcripts with cccp." >&2
+    fi
+  '';
+  cccpLinkLines = home: ''
+    _cccp_plugin="${home}/plugins/cccp"
+    mkdir -p "${home}/plugins"
+    if [ -L "$_cccp_plugin" ] || [ ! -e "$_cccp_plugin" ] || rmdir "$_cccp_plugin" 2>/dev/null; then
+      ln -sfn "${cccpPlugin}" "$_cccp_plugin"
+    fi
+  '';
+in
 {
   name = "hermes";
   inherit (hermes-agent) version;
@@ -27,6 +44,20 @@
     DISABLE_AUTOUPDATER = "1";
     DISABLE_TELEMETRY = "1";
   };
+
+  extraSandboxPackages = lib.optional (cccp != null) cccp;
+
+  sandboxInitLines = lib.optionalString (cccp != null) ''
+    if [ -d "${cccpPlugin}" ]; then
+      if [ "$(uname -s)" = Darwin ]; then
+        ${cccpLinkLines "$HOME/.hermes"}
+      else
+        EXTRA_MOUNTS+=( "${cccpPlugin}:$HOME/.hermes/plugins/cccp" )
+      fi
+      ${cccpEnabledWarning "$HOME/.hermes/config.yaml"}
+      ${cccpEnabledWarning "$_REAL_CONFIG_HOME/hermes/config.yaml"}
+    fi
+  '';
 
   microvm = {
     extraGuestPackages = with pkgs; [
@@ -58,6 +89,13 @@
         cp /run/env/.env "$HERMES_HOME/.env"
         chmod 0600 "$HERMES_HOME/.env"
       fi
+
+      ${lib.optionalString (cccp != null) ''
+        if [ -d "${cccpPlugin}" ]; then
+          ${cccpLinkLines "$HERMES_HOME"}
+          ${cccpEnabledWarning "$HERMES_HOME/config.yaml"}
+        fi
+      ''}
     '';
   };
 }

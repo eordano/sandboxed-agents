@@ -50,6 +50,10 @@ let
       d = "Block non-private egress";
     }
     {
+      f = "--privacy-filter";
+      d = "Route through the host privacy-filter proxy";
+    }
+    {
       f = "--disable-networking";
       d = "Block all non-localhost connections";
     }
@@ -165,6 +169,10 @@ let
 
   mountNegs = [
     {
+      f = "--no-privacy-filter";
+      d = "Disable privacy-filter proxy routing";
+    }
+    {
       f = "--no-disable-networking";
       d = "Re-enable networking";
     }
@@ -259,6 +267,12 @@ let
   ];
 
   argFlagsMicrovm = [
+    {
+      f = "--forward-host-loopback";
+      d = "Expose host loopback PORT at guest 10.0.2.100:PORT";
+      type = "any";
+      repeat = true;
+    }
     {
       f = "--extra-qemu-args";
       d = "Pass ARG verbatim to the QEMU runtime";

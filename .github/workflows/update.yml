@@ -1,13 +1,8 @@
 name: Update upstream
 
-# Runs twice daily and on manual dispatch.
-# For each agent with an update script, runs `nix run .#update-<agent>`,
-# then opens (or updates) a PR against main with the new hashes.
-# The PR auto-merges once CI passes.
-
 on:
   schedule:
-    - cron: '0 6,18 * * *'   # 06:00 and 18:00 UTC
+    - cron: '0 6,18 * * *'
   workflow_dispatch:
     inputs:
       agent:
@@ -30,11 +25,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: ${{ fromJSON(github.event.inputs.agent && format('["{0}"]', github.event.inputs.agent) || '["claude","hermes","opencode","codex","gemini","aider"]') }}
+        agent: ${{ fromJSON(github.event.inputs.agent && format('["{0}"]', github.event.inputs.agent) || '["claude","hermes","opencode","codex","gemini"]') }}
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: DeterminateSystems/nix-installer-action@da36cb69b1c3247ad7a1f931ebfd954a1105ef14  # v14
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: DeterminateSystems/nix-installer-action@da36cb69b1c3247ad7a1f931ebfd954a1105ef14
 
       - name: Configure git identity
         run: |

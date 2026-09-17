@@ -291,7 +291,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8090
-    # Threading: a single stalled websocket/half-open connection must not
-    # wedge every other request for the whole VM test.
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()

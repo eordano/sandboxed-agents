@@ -13,7 +13,7 @@ Scripts already wired: `scripts/record-agents.sh <backend> [outdir]` records one
 ## Prerequisites
 
 1. **`.env` with API keys** at repo root. Must be gitignored -- add `.env` to `.gitignore` if missing. Keys required:
-   - `OPENROUTER_API_KEY` (hermes, aider, opencode)
+   - `OPENROUTER_API_KEY` (hermes, opencode)
    - `ANTHROPIC_API_KEY` (claude)
    - `GEMINI_API_KEY` (gemini)
    - `OPENAI_API_KEY` (codex; skipped if unset)

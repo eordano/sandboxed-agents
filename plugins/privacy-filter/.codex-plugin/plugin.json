@@ -1,0 +1,19 @@
+{
+  "name": "privacy-filter",
+  "version": "0.1.0",
+  "description": "Fail-open PII pseudonymization for sandboxed coding-agent traffic",
+  "author": {
+    "name": "sandboxed-agents contributors"
+  },
+  "license": "MIT",
+  "keywords": ["privacy", "pii", "pseudonymization", "mitmproxy"],
+  "interface": {
+    "displayName": "Privacy Filter",
+    "shortDescription": "Pseudonymize PII before model requests leave the host.",
+    "longDescription": "An opt-in host-side mitmproxy addon shared by Codex, Claude Code, OpenCode, and Hermes. It keeps reversible mappings outside the sandbox and forwards original content with a local warning when sanitization fails.",
+    "developerName": "sandboxed-agents contributors",
+    "category": "Security",
+    "capabilities": ["Network", "Privacy"],
+    "defaultPrompt": ["Set up the host-side privacy filter for this sandbox."]
+  }
+}

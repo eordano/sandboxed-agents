@@ -108,6 +108,25 @@ The default is **off**; enable with `"xdgRemap": true` (or
 single invocation. Both config keys are first-class -- see the
 [xdgRemap section in flags.md](flags.md#xdgremap-opt-in) for precedence.
 
+### Hermes: cccp plugin via `EXTRA_MOUNTS`
+
+`hermes/default.nix` appends `${cccp}/share/cccp/plugin/hermes:$HOME/.hermes/plugins/cccp`
+to `EXTRA_MOUNTS` from `sandboxInitLines`. `EXTRA_MOUNTS` is consumed
+*after* the xdgRemap block, so the bind lands inside whichever real
+`~/.hermes` (dotfile or XDG) was mounted, or inside the ephemeral home when
+there is none; copying into `$SANDBOX_HOME/.hermes` would be shadowed by
+that bind. The only host-side write is bwrap creating the empty mountpoint.
+
+### Codex: cccp hooks via `sandboxInitLines`
+
+Codex only reads hooks from `$CODEX_HOME/hooks.json`, a single file that
+must be writable (trust state lives next to it in `config.toml`), so
+`codex/default.nix` copies `${cccp}/share/cccp/plugin/codex/hooks.json`
+into the effective codex home (real `~/.codex`, XDG dir, or the ephemeral
+home) instead of bind-mounting it -- the same `_CODEX_HOME` resolution
+claude uses for `.config.json`. A file with foreign content is left alone
+with a warning.
+
 ### Environment propagation
 
 Only a hardcoded whitelist is forwarded into the sandbox: `PATH`,
@@ -160,13 +179,21 @@ fragment inside the namespace and add measurable latency. The value
 applies only inside the sandbox namespace -- the host's real MTU is
 untouched.
 
-### `homePatterns` with `.config/` prefix
+### Home-allow entries with an XDG prefix
 
-`homePatterns` entries starting with `.config/` are resolved against
-the host's `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and
-bound into the sandbox at `$HOME/.config/<rest>`. This lets a single
-config entry work whether the user has `XDG_CONFIG_HOME` set or not,
-without needing to spell out both paths.
+Home-allow entries (the agent's built-in list and the `common-tools`
+mount group; `homePatterns` stay literal `$HOME`-relative) starting with `.config/`, `.local/share/` or `.cache/` are
+resolved against the host's `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME` or
+`$XDG_CACHE_HOME` (falling back to `$HOME/.config`, `$HOME/.local/share`,
+`$HOME/.cache`) and bound into the sandbox at the conventional
+`$HOME/<entry>` path. This lets a single entry work whether the user
+has the XDG variables set or not, and lets a wrapper give one run its
+own state root (`XDG_DATA_HOME=~/.local/share/opencode-scratch`) without
+the agent inside ever seeing a non-default path. The XDG variables
+themselves are *not* forwarded into the ephemeral home: the bind does
+the redirect, and the agent keeps its native paths. The resolver is the
+`_home_entry_host` helper in `lib/shell-blocks.nix`, shared with the
+macOS backend.
 
 ### Network namespace & iptables
 

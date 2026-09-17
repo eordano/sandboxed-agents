@@ -26,6 +26,8 @@ let
     sandboxInitLines = spec.sandboxInitLines or "";
     nativeCompletion = spec.nativeCompletion or null;
     enableEscapeHatch = spec.enableEscapeHatch or true;
+    extraBinaries = spec.extraBinaries or [ ];
+    extraSandboxPackages = spec.extraSandboxPackages or [ ];
   };
 
   darwinNullArgs = lib.optionalAttrs darwinNull {
@@ -41,12 +43,15 @@ let
 in
 if backend == "microvm" then
   import ./mk-microvm-sandbox.nix (
-    (removeAttrs common [ "extraHomeAllow" ])
+    (removeAttrs common [
+      "extraHomeAllow"
+      "extraSandboxPackages"
+    ])
     // {
       inherit lib pkgs microvm;
       sandboxInitLines = mv.sandboxInitLines or common.sandboxInitLines;
       extraEnvVars = common.extraEnvVars // (mv.extraEnvVars or { });
-      extraGuestPackages = mv.extraGuestPackages or [ ];
+      extraGuestPackages = (mv.extraGuestPackages or [ ]) ++ common.extraSandboxPackages;
     }
   )
 else
@@ -56,6 +61,7 @@ else
       inherit backend;
       supportsDarwin = spec.supportsDarwin or false;
       apiBaseUrlEnvVars = spec.apiBaseUrlEnvVars or [ ];
+      argvGuardLines = spec.argvGuardLines or "";
     }
     // darwinNullArgs
   )

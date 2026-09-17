@@ -26,6 +26,7 @@
   extraHomeAllow ? [ ],
   configFileName ? "${agentName}-sandbox.json",
   sandboxInitLines ? "",
+  argvGuardLines ? "",
   extraEnvVars ? { },
   enableYolo ? false,
   xdgRemaps ? [ ],
@@ -34,6 +35,8 @@
   supportsDarwin ? false,
   apiBaseUrlEnvVars ? [ ],
   enableEscapeHatch ? true,
+  extraBinaries ? [ ],
+  extraSandboxPackages ? [ ],
   pname ? "${agentName}-sandbox",
   nativeCompletion ? null,
 }:
@@ -80,8 +83,9 @@ let
           agentName
           configFileName
           sandboxInitLines
-          enableYolo
+          argvGuardLines
           ;
+        extraPathPrefix = lib.concatMapStringsSep ":" (p: "${p}/bin") extraSandboxPackages;
         inherit (blocks)
           homeAllowBlock
           mountGroupBlock
@@ -91,10 +95,13 @@ let
           xdgRemapBlock
           configDeployLines
           mkBackendDispatch
+          boolFlagBlocks
+          yoloBlocks
+          xdgResolveBlock
           ;
       };
     in
-    if stdenv.isDarwin && supportsDarwin then
+    if stdenv.hostPlatform.isDarwin && supportsDarwin then
       import ./sandbox-darwin.nix (
         sharedArgs
         // {
@@ -119,6 +126,7 @@ let
             iproute2
             iptables
             util-linux
+            coreutils
             python3
             apiBaseUrlEnvVars
             ;
@@ -139,6 +147,7 @@ let
             iproute2
             iptables
             util-linux
+            coreutils
             python3
             apiBaseUrlEnvVars
             ;
@@ -168,7 +177,7 @@ let
     echo "Added to allowed paths: $DIR"
   '';
 
-  completionsBackend = if stdenv.isDarwin && supportsDarwin then "darwin" else backend;
+  completionsBackend = if stdenv.hostPlatform.isDarwin && supportsDarwin then "darwin" else backend;
 
   canRunBinary = stdenv.buildPlatform.canExecute stdenv.hostPlatform;
 
@@ -247,8 +256,6 @@ stdenv.mkDerivation {
 
   phases = [ "installPhase" ];
 
-  # No buildInputs: the wrapper references every tool by interpolated store
-  # path, which already pins the runtime closure.
   nativeBuildInputs = [ installShellFiles ];
 
   installPhase = ''
@@ -296,6 +303,10 @@ stdenv.mkDerivation {
     ${lib.optionalString enableEscapeHatch ''
       ln -s ${agentBinaryDrv}/${agentBinaryRelPath} $out/bin/${agentName}-achtung-achtung
     ''}
+
+    ${lib.concatMapStrings (b: ''
+      ln -s ${agentBinaryDrv}/bin/${b} $out/bin/${b}
+    '') extraBinaries}
   '';
 
   meta = with lib; {

@@ -1,27 +1,18 @@
 {
-  description = "Sandboxed AI coding agents -- Claude Code, Hermes, OpenCode, Codex, Gemini CLI, Aider";
+  description = "Sandboxed AI coding agents -- Claude Code, Hermes, OpenCode, Codex, Gemini CLI";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     hermes-agent = {
-      # Pinned: rev 476f009f (0.19.0, 2026-07-25) added a setup.py guard that
-      # hard-fails wheel/sdist builds ("Building wheels or sdists for
-      # hermes-agent is not supported"), which breaks how this flake packages it.
-      # 8967e73e is the last rev that builds. Revisit once packaging follows
-      # upstream's Nix distribution instead of building from source.
-      url = "github:NousResearch/hermes-agent/8967e73e67838c8a67cc412e9c8eb9d791cc1f20";
+      url = "github:NousResearch/hermes-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     opencode-src = {
-      url = "github:anomalyco/opencode/v1.18.16";
+      url = "github:anomalyco/opencode/v1.18.30";
       flake = false;
     };
     gemini-src = {
-      url = "github:google-gemini/gemini-cli/v0.55.1";
-      flake = false;
-    };
-    aider-src = {
-      url = "github:Aider-AI/aider/v0.86.2";
+      url = "github:google-gemini/gemini-cli/v0.59.0";
       flake = false;
     };
     home-manager = {
@@ -30,6 +21,10 @@
     };
     microvm = {
       url = "github:astro/microvm.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    cccp = {
+      url = "github:eordano/cccp";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -41,14 +36,13 @@
       hermes-agent,
       opencode-src,
       gemini-src,
-      aider-src,
       home-manager,
       microvm,
+      cccp,
     }:
     let
       inherit (nixpkgs) lib;
 
-      # x86_64-darwin dropped: nixpkgs 26.11 (nixos-unstable) no longer supports it.
       allSystems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -60,7 +54,6 @@
       ];
 
       allAgents = [
-        "aider"
         "claude"
         "codex"
         "gemini"
@@ -73,9 +66,9 @@
           nixpkgs
           opencode-src
           gemini-src
-          aider-src
           hermes-agent
           microvm
+          cccp
           ;
       };
 
@@ -112,18 +105,43 @@
           git
         ];
 
+      nixFiles = lib.fileset.fileFilter (f: f.hasExt "nix") ./.;
+      shFiles = lib.fileset.fileFilter (f: f.hasExt "sh") ./.;
+      sourceOf =
+        fileset:
+        lib.fileset.toSource {
+          root = ./.;
+          inherit fileset;
+        };
+      nixSrc = sourceOf nixFiles;
+      shSrc = sourceOf shFiles;
+      lintSrc = sourceOf (lib.fileset.union nixFiles shFiles);
+
       mkUpdate = pkgs: name: {
         type = "app";
         program = "${pkgs.writeShellScript "run-update-${name}" ''
           export PATH=${lib.makeBinPath (updateTools pkgs)}:$PATH
           export REPO_ROOT="$PWD"
-          exec bash ${./.}/lib/update.sh ${name}
+          exec bash ${./lib}/update.sh ${name}
         ''}";
         meta.description = "Update ${name}";
       };
 
     in
     {
+      lib.hermesAgentSource = hermes-agent.outPath;
+
+      lib.mkMicrovmSandbox =
+        args:
+        import ./lib/mk-microvm-sandbox.nix (
+          {
+            inherit (nixpkgs) lib;
+            inherit microvm;
+            inherit (args) pkgs;
+          }
+          // builtins.removeAttrs args [ "pkgs" ]
+        );
+
       overlays = {
         default = sandboxedAgentsOverlay;
         gvisorFix = import ./overlays/gvisor-go126-fix.nix;
@@ -133,8 +151,18 @@
         pkgs: _system:
         let
           variants = derivationVariants pkgs;
+          privacyFilter = pkgs.callPackage ./plugins/privacy-filter/default.nix { };
+          codesumPlugin = pkgs.runCommand "hermes-codesum-plugin" { } ''
+            mkdir -p $out
+            cp -R ${./plugins/codesum}/. $out/
+          '';
         in
-        variants // { default = variants.claude; }
+        variants
+        // {
+          privacy-filter = privacyFilter;
+          codesum-plugin = codesumPlugin;
+          default = variants.claude;
+        }
       );
 
       apps = forSystems allSystems (
@@ -156,11 +184,15 @@
         // {
           default = mkApp variants.claude "claude";
 
+          privacy-filter = mkApp (pkgs.callPackage ./plugins/privacy-filter/default.nix
+            { }
+          ) "sandbox-privacy-proxy";
+
           check-all = {
             type = "app";
             program = "${pkgs.writeShellScript "check-all" ''
               set -euo pipefail
-              checks=(format shellcheck statix deadnix)
+              checks=(format shellcheck statix deadnix microvm-launcher-contract)
               microvm_pkgs=(${
                 lib.concatMapStringsSep " " (n: ''"${n}"'') (
                   lib.filter (lib.hasSuffix "-microvm") (lib.attrNames variants)
@@ -209,7 +241,7 @@
               export REPO_ROOT="$PWD"
               for a in ${lib.concatStringsSep " " allAgents}; do
                 echo "=== Updating $a ==="
-                bash ${./.}/lib/update.sh "$a"
+                bash ${./lib}/update.sh "$a"
               done
             ''}";
             meta.description = "Update all agents";
@@ -261,7 +293,7 @@
                   ];
                 }
                 ''
-                  cd ${self}
+                  cd ${lintSrc}
                   find . -name '*.nix' -exec nixfmt --check {} +
                   find . -name '*.sh' -exec shfmt -d -i 2 -ci {} +
                   touch $out
@@ -275,18 +307,92 @@
                   ];
                 }
                 ''
-                  cd ${self}
+                  cd ${shSrc}
                   find . -name '*.sh' -exec shellcheck -S warning {} +
                   touch $out
                 '';
             statix = pkgs.runCommand "statix" { nativeBuildInputs = [ pkgs.statix ]; } ''
-              statix check ${self} --config ${./.statix.toml}
+              statix check ${nixSrc} --config ${./.statix.toml}
               touch $out
             '';
             deadnix = pkgs.runCommand "deadnix" { nativeBuildInputs = [ pkgs.deadnix ]; } ''
-              deadnix --fail ${self}
+              deadnix --fail ${nixSrc}
               touch $out
             '';
+            privacy-filter =
+              pkgs.runCommand "privacy-filter-test"
+                {
+                  nativeBuildInputs = [ pkgs.python3 ];
+                }
+                ''
+                  cd ${./plugins/privacy-filter/scripts}
+                  python3 -m unittest -v test_privacy_core.py
+                  touch $out
+                '';
+            codesum-plugin =
+              pkgs.runCommand "codesum-plugin-test"
+                {
+                  nativeBuildInputs = [ pkgs.python3 ];
+                }
+                ''
+                  cp -R ${./plugins/codesum} ./codesum
+                  chmod -R u+w ./codesum
+                  python3 -m compileall -q ./codesum
+                  touch $out
+                '';
+            microvm-launcher-contract =
+              pkgs.runCommand "microvm-launcher-contract"
+                {
+                  nativeBuildInputs = [ pkgs.gnugrep ];
+                }
+                ''
+                  launcher=${pkgs.sandboxedAgents.hermes-microvm}/bin/hermes
+                  grep -F -- 'virtiofsd-run --user "$(' "$launcher"
+                  grep -F -- '_VIRTIOFSD_READY_ATTEMPTS=300' "$launcher"
+                  grep -F -- \
+                    'virtiofsd process exited before its sockets became ready' \
+                    "$launcher"
+                  grep -F -- 'virtiofsd.log (last 40 lines)' "$launcher"
+                  grep -F -- '--sandbox none' "$launcher"
+                  grep -F -- '--translate-uid "map:1000:$HOST_UID:1"' "$launcher"
+                  grep -F -- '--translate-gid "map:1000:$HOST_GID:1"' "$launcher"
+                  grep -F -- 'kill "$VIRTIOFSD_PID" 2>/dev/null || true' "$launcher"
+                  grep -F -- 'flock -u 200 || true' "$launcher"
+                  grep -F -- '--forward-host-loopback requires a TCP port from 1 to 65535' "$launcher"
+                  grep -F -- 'guestfwd=tcp:10.0.2.100:$_port-cmd:$_forwarder' "$launcher"
+                  grep -F -- 'TCP:127.0.0.1:' "$launcher"
+                  if "$launcher" \
+                    --forward-host-loopback not-a-port \
+                    --sandbox-show-config > invalid-port.out 2> invalid-port.err; then
+                    echo 'invalid forward port was accepted' >&2
+                    exit 1
+                  fi
+                  grep -F -- \
+                    "got 'not-a-port'" \
+                    invalid-port.err
+                  grep -F -- \
+                    '*:*) _RESOLVED_IPS="$_host"' \
+                    ${./lib/microvm-guest.nix}
+                  grep -F -- \
+                    'network-lockdown: could not resolve allowed host' \
+                    ${./lib/microvm-guest.nix}
+                  grep -F -A 8 -- \
+                    'chmod 0711 "$MOUNT_BASE/env"' \
+                    "$launcher" > guest-control-mode-block
+                  grep -F -- 'chmod 0666 "$EXIT_CODE_FILE"' guest-control-mode-block
+                  grep -F -- 'chmod 0644 \' guest-control-mode-block
+                  grep -F -- '"$ENV_FILE" \' guest-control-mode-block
+                  grep -F -- '"$MOUNT_BASE/env/.user" \' guest-control-mode-block
+                  grep -F -- '"$MOUNT_BASE/env/.home" \' guest-control-mode-block
+                  grep -F -- '"$MOUNT_BASE/env/.workdir" \' guest-control-mode-block
+                  grep -F -- '"$MOUNT_BASE/env/.mode" \' guest-control-mode-block
+                  grep -F -- '"$MOUNT_BASE/env/.args"' guest-control-mode-block
+                  grep -F -- 'chmod 0644 "$MOUNT_BASE/env/.allowed-hosts"' "$launcher"
+                  grep -F -- 'guest agent exit status was not reported' "$launcher"
+                  grep -F -- 'exit "$_GUEST_STATUS"' "$launcher"
+                  test "$(grep -F -c '> /run/env/.exit-code' ${./lib/microvm-guest.nix})" -eq 2
+                  touch $out
+                '';
           };
 
           mkTest =
@@ -316,7 +422,6 @@
                 home-manager-module = home-manager.nixosModules.home-manager;
                 agentPackages = lib.genAttrs [
                   "claude"
-                  "aider"
                   "opencode"
                   "gemini"
                 ] (name: self.packages.${system}.${name});

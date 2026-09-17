@@ -11,9 +11,12 @@ Nix flake that wraps AI coding agents in gVisor (Linux, default), bubblewrap (Li
 | [OpenCode](./opencode/) | Built from GitHub (`anomalyco/opencode`) |
 | [Codex](./codex/) | Prebuilt binary from `openai/codex` releases |
 | [Gemini CLI](./gemini/) | Built from GitHub (`google-gemini/gemini-cli`) |
-| [Aider](./aider/) | Built from GitHub (`Aider-AI/aider`) |
 
 All agents run under gVisor by default on Linux and seatbelt on macOS.
+
+When the flake is given a `cccp` package, the `hermes` wrapper also puts `cccp` on the sandbox PATH and ships the [cccp](https://github.com/eordano/cccp) transcript plugin at `~/.hermes/plugins/cccp` (bind-mounted from the store on Linux, symlinked on microvm/macOS); a pre-existing `~/.hermes/config.yaml` still needs a one-time `hermes plugins enable cccp` (the launcher warns).
+
+The `codex` wrapper likewise copies the [cccp](https://github.com/eordano/cccp) `hooks.json` into the effective `~/.codex` (never over a foreign one) and creates `~/.codex/cccp/`; codex asks you to trust the two hooks once in the TUI, and `~/.codex/cccp/config.json` is yours to write.
 
 ## Quick Start
 
@@ -54,6 +57,31 @@ Fresh `$HOME` with only these paths mounted by default: current directory (rw), 
 
 API keys are never passed in. Environment whitelist: `PATH`, `HOME`, `USER`, `LOGNAME`, `MAIL`, `TERM`, `SHELL`, `LANG`, `TZ`, plus SSL cert paths pointing to the Nix `cacert` store path. Provide credentials via a SOCKS proxy (e.g. mitmproxy) that injects API headers at the proxy layer.
 
+### Privacy filtering
+
+The optional [privacy-filter plugin](./plugins/privacy-filter/) adds fail-open,
+reversible PII pseudonymization to that external proxy. Because enforcement is
+outside the sandbox, one host-side mapping database works for Claude Code,
+Hermes, OpenCode, and Codex without exposing the original values to any agent.
+On classifier or format failures it logs a local warning and forwards the
+original request, prioritizing availability rather than providing a hard DLP
+guarantee.
+
+```bash
+nix run .#privacy-filter
+# In another terminal:
+claude --privacy-filter
+```
+
+Then enable it with `--privacy-filter`, `SANDBOX_PRIVACY_FILTER=1`, or
+`"privacyFilter": true` in the sandbox config. The setting is off by default and
+uses an explicit `socksProxy` when configured, otherwise the proxy on host port
+1080. Mount mitmproxy's CA as
+documented in the plugin README. The default classifier is the protected
+Speaches-plus `/v1/pii/classify` endpoint on `llm.decent.dev`; a loopback
+Speaches-plus endpoint can be configured when even the classifier must remain
+on-device.
+
 The two platforms reach the same "no credentials leak" outcome via different mechanisms:
 
 - **Linux (bwrap/runsc/microvm)** -- the sandbox gets a fresh ephemeral `$HOME`, so paths like `~/.aws`, `~/.ssh`, `~/.gnupg`, `~/.kube`, browser keyrings, etc. do not exist inside it. No explicit deny-list is needed.
@@ -67,6 +95,8 @@ Default: shared host network unless a `socksProxy` is configured. With `--socks-
 
 On Linux, the sandbox can bind-mount `$XDG_CONFIG_HOME/<agent>/` to `~/.<agent>/` inside the sandbox. Off by default; enable with `"xdgRemap": true` in config or `SANDBOX_XDG_REMAP=1`. Respects `$XDG_CONFIG_HOME`, falls back to dotfile paths. No effect on macOS.
 
+Independently of that opt-in remap, every home-allow entry under `.config/`, `.local/share/` or `.cache/` (the agent's built-in list and the `common-tools` mount group; `homePatterns` stay literal `$HOME`-relative) is always resolved against the host's `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` / `$XDG_CACHE_HOME`, falling back to `~/.config`, `~/.local/share`, `~/.cache`. On Linux the resolved host path is bound at the conventional `~/...` location inside the ephemeral home; on macOS (no ephemeral home) the resolved path is what gets write-allowed and the three variables are forwarded into the sandbox so the agent writes where the launcher looked. Setting `XDG_DATA_HOME=~/.local/share/opencode-scratch` therefore gives that run its own session store on both platforms.
+
 | Agent | Legacy path | XDG path (host) |
 |---|---|---|
 | Claude Code | `~/.claude/`, `~/.claude.json` | `~/.config/claude/` |
@@ -74,7 +104,6 @@ On Linux, the sandbox can bind-mount `$XDG_CONFIG_HOME/<agent>/` to `~/.<agent>/
 | OpenCode | -- | `~/.config/opencode/` |
 | Codex | `~/.codex/` | `~/.config/codex/` |
 | Gemini CLI | `~/.gemini/` | `~/.config/gemini/` |
-| Aider | `~/.aider/`, `~/.aider.conf.yml`, `~/.aider.model.metadata.json` | `~/.config/aider/` |
 
 ## Configuration
 
@@ -101,6 +130,7 @@ All agents accept the same CLI flags. Every boolean toggle has a `--no-X` counte
 | `--allow-host HOST` | | string | Allow traffic to a specific host (with `--disable-networking`) |
 | `--disable-networking` | `disableNetworking` | bool | Block all non-localhost connections |
 | `--socks-proxy HOST:PORT` | `socksProxy` | string | SOCKS5 proxy (Linux only) |
+| `--privacy-filter` | `privacyFilter` | bool | Route through the host privacy-filter proxy (Linux only; env `SANDBOX_PRIVACY_FILTER`) |
 | `--backend BACKEND` | `backend` | string | Re-exec under `bwrap`\|`runsc`\|`microvm`. CLI > `SANDBOX_BACKEND` env > config > wrapper's own backend. Targets the `<agent>-{sandbox,runsc,microvm}` symlink on PATH; errors if not installed. |
 | `--sandbox-config FILENAME` | | string | Use a specific config file |
 | `--mount-home-cache` | `mountHomeCache` | bool | Mount `~/.cache/*` dirs for common dev tools |
@@ -108,6 +138,7 @@ All agents accept the same CLI flags. Every boolean toggle has a `--no-X` counte
 | `--mount-tmp` | `mountTmp` | bool | Mount the real `/tmp` instead of ephemeral sandbox tmp (Linux only; no-op on macOS where `/tmp` is always writable) |
 | `--mount PATH` | `paths` | string[] | Transparent bind-mount (supports `ro:/path`, `/host:/guest`) |
 | `--env KEY=VALUE` | `extraEnvs` | string[] | Extra env vars (repeatable) |
+| `--forward-host-loopback PORT` | | port[] | Expose host `127.0.0.1:PORT` at guest `10.0.2.100:PORT` (microvm only, repeatable) |
 | `--extra-bubblewrap-args ARG` | `extraBubblewrapArgs` | string[] | Pass ARG verbatim to `bwrap` (Linux/bwrap only) |
 | `--extra-runsc-args ARG` | `extraRunscArgs` | string[] | Pass ARG verbatim to `runsc` (Linux/runsc only) |
 | `--extra-qemu-args ARG` | `extraQemuArgs` | string[] | Pass ARG verbatim to QEMU (microvm only) |
@@ -176,7 +207,7 @@ nix run .#update-claude   # single agent
 
 `main` takes version bumps through reviewed PRs. The `auto-update` branch is
 rebuilt every 12 hours as `main` plus the newest upstream pins, pushed only if
-all six agents still build:
+all five agents still build:
 
 ```bash
 nix run github:eordano/sandboxed-agents/auto-update
@@ -205,9 +236,11 @@ Shared library (`lib/`): `mk-sandbox.nix` (builder), `sandbox-{linux,darwin}.nix
 
 The unsandboxed binary is available as `<agent>-achtung-achtung` for emergencies. It's a symlink to the underlying agent derivation, installed when the builder is called with `enableEscapeHatch = true` (the default). Agents that shouldn't offer an unsandboxed entry point can set it to `false`.
 
+An agent whose upstream binary looks for helper executables *beside itself* lists them in `extraBinaries` (names under the agent derivation's `bin/`); the builder symlinks each into the package's own `bin/`. Codex needs this: it resolves `codex-code-mode-host` as a sibling of the path it was invoked as, without following symlinks, so the escape hatch in a profile `bin/` finds nothing unless the helper is linked there too. The sandbox wrapper itself is unaffected -- it execs the agent by store path, where the sibling always exists.
+
 ## macOS (Darwin) Support
 
-All six agents opt in with `supportsDarwin = true` and build under seatbelt. Only `aarch64-darwin` is supported (nixpkgs unstable dropped `x86_64-darwin` in 26.11). On macOS the `<agent>-bwrap` package name is an alias of the seatbelt build, kept so profiles and scripts stay portable across platforms. On `aarch64-darwin`, claude additionally has a microvm variant (no other agent does -- see [docs/microvm.md](./docs/microvm.md#macos-aarch64-darwin-support)). Seatbelt profile: deny-default, allows exec in `/nix`/`/usr/bin`/`/bin`, outbound network, read of system libs/`/etc`/`/dev`, rw to project dir/agent config/caches and an ephemeral per-invocation `TMPDIR` under `/var/folders`. `/tmp` and `/private/tmp` are always writable (required for agent tool calls); `--mount-tmp` and config `mountTmp` are no-ops on macOS and warn. Linux-only flags (e.g. `--allow-gui`, `--allow-kvm`, `--socks-proxy`, `--disable-networking`) print a warning and are ignored.
+All five agents opt in with `supportsDarwin = true` and build under seatbelt. Only `aarch64-darwin` is supported (nixpkgs unstable dropped `x86_64-darwin` in 26.11). On macOS the `<agent>-bwrap` package name is an alias of the seatbelt build, kept so profiles and scripts stay portable across platforms. On `aarch64-darwin`, claude additionally has a microvm variant (no other agent does -- see [docs/microvm.md](./docs/microvm.md#macos-aarch64-darwin-support)). Seatbelt profile: deny-default, allows exec in `/nix`/`/usr/bin`/`/bin`, outbound network, read of system libs/`/etc`/`/dev`, rw to project dir/agent config/caches and an ephemeral per-invocation `TMPDIR` under `/var/folders`. `/tmp` and `/private/tmp` are always writable (required for agent tool calls); `--mount-tmp` and config `mountTmp` are no-ops on macOS and warn. Linux-only flags (e.g. `--allow-gui`, `--allow-kvm`, `--socks-proxy`, `--disable-networking`) print a warning and are ignored.
 
 ## Backend Notes
 

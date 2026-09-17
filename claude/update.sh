@@ -31,8 +31,6 @@ fi
 
 MANIFEST=$(curl -sf "$GCS_BASE/$LATEST_VERSION/manifest.json")
 
-# Prefetch and verify every platform before touching the file, so a bad
-# platform can't leave a half-updated version/hash mix behind.
 declare -A HASHES=()
 for nix_system in "${!PLATFORMS[@]}"; do
   gcs_platform="${PLATFORMS[$nix_system]}"

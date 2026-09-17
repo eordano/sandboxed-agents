@@ -36,8 +36,6 @@ in
     DISABLE_ERROR_REPORTING = "1";
     DISABLE_TELEMETRY = "1";
     DISABLE_UPGRADE_COMMAND = "1";
-    # Set inside the sandbox only -- the bare claude-achtung-achtung escape
-    # hatch must not claim to be sandboxed.
     IS_SANDBOX = "1";
   };
 

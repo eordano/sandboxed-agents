@@ -9,25 +9,25 @@
 }:
 
 let
-  version = "2.1.228";
+  version = "2.1.268";
 
   platformInfo =
     {
       "x86_64-linux" = {
         platform = "linux-x64";
-        sha256 = "16acm624ylg6qkmii9850cx65imhrr97zkcw2w0fp8s1d5g9hdfm";
+        sha256 = "0lsn8ah98sm1f4qj6h15crdw8zzzahpf7f7zik514rvrpnvs54cn";
       };
       "aarch64-linux" = {
         platform = "linux-arm64";
-        sha256 = "0hpr65w3xf6a9r1nz9mjrrjdlbnlki8mccf4381gfys935i00r16";
+        sha256 = "0qlgihbblww7jjgs9gdzss7c474y90ndcw7ixl4ixvrrz4qx0vqi";
       };
       "aarch64-darwin" = {
         platform = "darwin-arm64";
-        sha256 = "0ivj9dwpp1c7w4y33fbacjnilnvm6w2fydkg6h43mw6fa89lnj23";
+        sha256 = "0sn7ddqwvrxp8cqa2ahj9k654whdwrc1r7w543qp0dzq4da6va86";
       };
       "x86_64-darwin" = {
         platform = "darwin-x64";
-        sha256 = "1cq9vj545wykgckadvcanpzsdi6xv998hzd5fxnx8r7v1spg2lkq";
+        sha256 = "1sb7vb9vwmljdvp6gspkcnpw3hl0r7krl4n9in7g4ydbn1d0sk7r";
       };
     }
     .${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
@@ -68,8 +68,10 @@ stdenv.mkDerivation {
   dontBuild = true;
   dontStrip = true;
 
-  nativeBuildInputs = lib.optionals stdenv.isLinux [ autoPatchelfHook ] ++ [ binutils-unwrapped ];
-  buildInputs = lib.optionals stdenv.isLinux [ stdenv.cc.cc.lib ];
+  nativeBuildInputs = lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ] ++ [
+    binutils-unwrapped
+  ];
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib ];
 
   installPhase = ''
     mkdir -p $out/bin

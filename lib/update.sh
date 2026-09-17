@@ -17,11 +17,6 @@ esac
 source "$LIB_DIR/update-lib.sh"
 
 case "$AGENT" in
-  aider)
-    REPO=Aider-AI/aider
-    INPUT=aider-src
-    HASH_FIELD=""
-    ;;
   gemini)
     REPO=google-gemini/gemini-cli
     INPUT=gemini-src
@@ -46,8 +41,6 @@ LATEST=$(curl -sf ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} \
 check_version "$LATEST"
 
 nix flake lock --override-input "$INPUT" "github:$REPO/v$LATEST"
-# Keep the declared input ref in sync with the lock, or the next
-# `nix flake update` silently reverts the source to the old tag.
 sed -i "s|github:$REPO/v[^\"]*|github:$REPO/v$LATEST|" "$REPO_ROOT/flake.nix"
 
 bump_version

@@ -10,6 +10,11 @@
   sandboxHomeDest ? ".${agentName}",
   sandboxInitLines ? "",
   useVirtiofs ? true,
+  guestAgentUid,
+  guestAgentGid,
+  trustedSupervisor ? false,
+  memoryMiB ? 2049,
+  vcpu ? 2,
 }:
 
 { pkgs, ... }:
@@ -26,24 +31,31 @@ in
 {
   microvm = {
     hypervisor = "qemu";
-    mem = 2049;
-    vcpu = 2;
+    mem = memoryMiB;
+    inherit vcpu;
     virtiofsd.group = null;
-
-    shares = [
-      {
-        tag = "nix-store";
-        source = "/nix/store";
-        mountPoint = "/nix/store";
-        proto = shareProto;
-      }
-      {
-        tag = "env-share";
-        source = "${mountBase}/env";
-        mountPoint = "/run/env";
-        proto = shareProto;
-      }
+    virtiofsd.extraArgs = [
+      "--sandbox"
+      "none"
     ];
+
+    shares =
+      lib.optionals (!trustedSupervisor) [
+        {
+          tag = "nix-store";
+          source = "/nix/store";
+          mountPoint = "/nix/store";
+          proto = shareProto;
+        }
+      ]
+      ++ [
+        {
+          tag = "env-share";
+          source = "${mountBase}/env";
+          mountPoint = "/run/env";
+          proto = shareProto;
+        }
+      ];
 
     interfaces = [
       {
@@ -52,9 +64,21 @@ in
         mac = "02:00:00:00:00:01";
       }
     ];
+  }
+  // lib.optionalAttrs trustedSupervisor {
+    storeOnDisk = true;
+    storeDiskType = "erofs";
+    storeDiskErofsFlags = [
+      "-zlz4hc"
+      "-Eztailpacking"
+      "-Efragments"
+      "--workers=4"
+    ];
   };
 
-  fileSystems."/nix/store".options = [ "ro" ];
+  fileSystems = lib.optionalAttrs (!trustedSupervisor) {
+    "/nix/store".options = [ "ro" ];
+  };
 
   networking.hostName = "${agentName}-sandbox";
   networking.firewall.enable = false;
@@ -63,8 +87,9 @@ in
     isNormalUser = true;
     home = "/home/agent";
     group = "agent";
+    uid = guestAgentUid;
   };
-  users.groups.agent = { };
+  users.groups.agent.gid = guestAgentGid;
 
   environment.systemPackages = [
     agentBinaryDrv
@@ -107,7 +132,10 @@ in
       pkgs.shadow
       pkgs.util-linux
     ];
-    environment.SANDBOX_FS_TYPE = if useVirtiofs then "virtiofs" else "9p";
+    environment = {
+      SANDBOX_FS_TYPE = if useVirtiofs then "virtiofs" else "9p";
+    }
+    // lib.optionalAttrs trustedSupervisor { SANDBOX_REQUIRE_WORKDIR_MOUNT = "1"; };
     script = builtins.readFile ./microvm-sandbox-setup.sh;
   };
 
@@ -156,17 +184,36 @@ in
       pkgs.util-linux
     ];
     script = ''
-      _ALLOWED_IPS=""
+      _ALLOWED_IPV4=""
+      _ALLOWED_IPV6=""
       if [ -f /run/env/.allowed-hosts ]; then
         # /etc/hosts is a read-only /nix/store symlink; copy, append, bind-mount.
         cp -L /etc/hosts /run/hosts.lockdown
         while IFS= read -r _host; do
           [ -z "$_host" ] && continue
+          case "$_host" in
+            *:*) _RESOLVED_IPS="$_host" ;;
+            *[!0-9.]*)
+              _RESOLVED_IPS=$(
+                getent ahosts "$_host" 2>/dev/null \
+                  | awk '{print $1}' \
+                  | sort -u
+              )
+              if [ -z "$_RESOLVED_IPS" ]; then
+                echo "network-lockdown: could not resolve allowed host $_host" >&2
+                exit 1
+              fi
+              ;;
+            *) _RESOLVED_IPS="$_host" ;;
+          esac
           while IFS= read -r _ip; do
             [ -n "$_ip" ] || continue
-            _ALLOWED_IPS="$_ALLOWED_IPS $_ip"
+            case "$_ip" in
+              *:*) _ALLOWED_IPV6="$_ALLOWED_IPV6 $_ip" ;;
+              *) _ALLOWED_IPV4="$_ALLOWED_IPV4 $_ip" ;;
+            esac
             echo "$_ip $_host" >> /run/hosts.lockdown
-          done < <(getent ahosts "$_host" 2>/dev/null | awk '{print $1}' | sort -u)
+          done <<< "$_RESOLVED_IPS"
         done < /run/env/.allowed-hosts
         mount --bind /run/hosts.lockdown /etc/hosts
       fi
@@ -174,14 +221,14 @@ in
       if [ -f /run/env/.disable-networking ]; then
         ${pkgs.iptables}/bin/iptables -P OUTPUT DROP
         ${pkgs.iptables}/bin/iptables -A OUTPUT -o lo -j ACCEPT
-        for _ip in $_ALLOWED_IPS; do
-          ${pkgs.iptables}/bin/iptables -A OUTPUT -d "$_ip" -j ACCEPT 2>/dev/null || true
+        for _ip in $_ALLOWED_IPV4; do
+          ${pkgs.iptables}/bin/iptables -A OUTPUT -d "$_ip" -j ACCEPT
         done
         if command -v ${pkgs.iptables}/bin/ip6tables >/dev/null 2>&1; then
           ${pkgs.iptables}/bin/ip6tables -P OUTPUT DROP
           ${pkgs.iptables}/bin/ip6tables -A OUTPUT -o lo -j ACCEPT
-          for _ip in $_ALLOWED_IPS; do
-            ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d "$_ip" -j ACCEPT 2>/dev/null || true
+          for _ip in $_ALLOWED_IPV6; do
+            ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d "$_ip" -j ACCEPT
           done
         fi
       elif [ -f /run/env/.no-internet-access ]; then
@@ -193,8 +240,8 @@ in
         ${pkgs.iptables}/bin/iptables -A OUTPUT -d 100.64.0.0/10 -j ACCEPT
         ${pkgs.iptables}/bin/iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT
         ${pkgs.iptables}/bin/iptables -A OUTPUT -d 169.254.0.0/16 -j ACCEPT
-        for _ip in $_ALLOWED_IPS; do
-          ${pkgs.iptables}/bin/iptables -A OUTPUT -d "$_ip" -j ACCEPT 2>/dev/null || true
+        for _ip in $_ALLOWED_IPV4; do
+          ${pkgs.iptables}/bin/iptables -A OUTPUT -d "$_ip" -j ACCEPT
         done
         if command -v ${pkgs.iptables}/bin/ip6tables >/dev/null 2>&1; then
           ${pkgs.iptables}/bin/ip6tables -P OUTPUT DROP
@@ -202,11 +249,21 @@ in
           ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d ::1/128 -j ACCEPT
           ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d fc00::/7 -j ACCEPT
           ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d fe80::/10 -j ACCEPT
-          for _ip in $_ALLOWED_IPS; do
-            ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d "$_ip" -j ACCEPT 2>/dev/null || true
+          for _ip in $_ALLOWED_IPV6; do
+            ${pkgs.iptables}/bin/ip6tables -A OUTPUT -d "$_ip" -j ACCEPT
           done
         fi
       fi
+
+      {
+        printf 'allowed_ipv4=%s\n' "$_ALLOWED_IPV4"
+        printf 'allowed_ipv6=%s\n' "$_ALLOWED_IPV6"
+        ${pkgs.iptables}/bin/iptables -S OUTPUT
+        if command -v ${pkgs.iptables}/bin/ip6tables >/dev/null 2>&1; then
+          ${pkgs.iptables}/bin/ip6tables -S OUTPUT
+        fi
+      } > /run/sandbox-network-policy
+      chmod 0444 /run/sandbox-network-policy
     '';
   };
 
@@ -245,13 +302,13 @@ in
 
     serviceConfig = {
       Type = "oneshot";
-      User = "agent";
       StandardInput = "tty";
       StandardOutput = "tty";
       TTYPath = "/dev/ttyS0";
       TTYReset = true;
       TTYVHangup = true;
-    };
+    }
+    // lib.optionalAttrs (!trustedSupervisor) { User = "agent"; };
 
     script = ''
       ${envExportLines}
@@ -284,11 +341,21 @@ in
 
       ${sandboxInitLines}
 
-      cd "$WORKDIR" 2>/dev/null || cd "$HOME"
+      ${lib.optionalString trustedSupervisor ''
+        export SANDBOX_TRUSTED_SUPERVISOR=1
+        export SANDBOX_TRUSTED_CONTROL_FILE=/run/env/.trusted-control
+      ''}
+
+      ${if trustedSupervisor then ''cd "$WORKDIR"'' else ''cd "$WORKDIR" 2>/dev/null || cd "$HOME"''}
 
       AGENT_MODE=$(cat /run/env/.mode 2>/dev/null || echo "agent")
+      _AGENT_STATUS=0
       if [ "$AGENT_MODE" = "shell" ]; then
-        exec ${pkgs.bashInteractive}/bin/bash -l
+        if ${pkgs.bashInteractive}/bin/bash -l; then
+          _AGENT_STATUS=0
+        else
+          _AGENT_STATUS=$?
+        fi
       else
         _AGENT_ARGS=()
         if [ -f /run/env/.args ]; then
@@ -296,8 +363,14 @@ in
             _AGENT_ARGS+=("''$arg")
           done < /run/env/.args
         fi
-        exec ${agentBin} "''${_AGENT_ARGS[@]}"
+        if ${agentBin} "''${_AGENT_ARGS[@]}"; then
+          _AGENT_STATUS=0
+        else
+          _AGENT_STATUS=$?
+        fi
       fi
+      printf '%s\n' "$_AGENT_STATUS" > /run/env/.exit-code
+      exit "$_AGENT_STATUS"
     '';
   };
 
@@ -450,12 +523,19 @@ in
         }' > "$BUNDLE/config.json"
 
       cd "$BUNDLE"
-      exec runsc \
+      _AGENT_STATUS=0
+      if runsc \
         --platform="$PLATFORM" \
         --network=host \
         --ignore-cgroups \
         --overlay2=root:memory \
-        run agent
+        run agent; then
+        _AGENT_STATUS=0
+      else
+        _AGENT_STATUS=$?
+      fi
+      printf '%s\n' "$_AGENT_STATUS" > /run/env/.exit-code
+      exit "$_AGENT_STATUS"
     '';
   };
 

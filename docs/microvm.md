@@ -24,6 +24,17 @@ For the flag matrix and precedence rules, see [flags.md](flags.md).
   VM, sets up virtiofs shares, opens socat bridges, and waits for the
   agent to exit.
 
+## Guest configuration from Nix
+
+`lib.mkMicrovmSandbox` accepts `extraGuestModules` (default `[]`) for trusted
+NixOS guest configuration, such as a dedicated scratch volume. This is a build
+input, not a runtime CLI or JSON setting.
+
+Relative `microvm.volumes[].image` paths are created in the launcher's private
+per-run directory. The launcher removes that directory on exit, so these volumes
+do not persist between runs. Use this for build caches that exceed the guest's
+memory-backed `/run` limit; absolute image paths have a different lifecycle.
+
 ## Filesystem: virtiofs + file staging
 
 The guest shares three categories of host data:
@@ -165,29 +176,27 @@ agent's docker client speak TCP directly. Clients that hardcode
 
 ## systemd service graph
 
-```
-   sandbox-setup.service    (oneshot: mounts .mounts shares, runs file
-                             staging from .staged-manifest, applies xdg
-                             binds from .xdg-home-mounts, links nix-profile
-                             from .nix-profile-target)
-        ↓
-   network-lockdown.service (oneshot: reads .allowed-hosts, applies
-                             iptables rules for .no-internet-access /
-                             .disable-networking)
-        ↓
-   ssh-auth-bridge          (socat, if /run/env/.ssh-auth-port)
-   gpg-agent-bridge         (socat, if /run/env/.gpg-agent-port)
-   libvirt-bridge           (socat, if /run/env/.libvirt-port)
-        ↓
-   agent-run.service        (oneshot: exec the agent binary as `agent` user)
-        ↓
-   agent-shutdown.service   (poweroff after agent-run exits)
-```
+Boot order: `sandbox-setup.service` (oneshot: mounts `.mounts` shares,
+runs file staging from `.staged-manifest`, applies xdg binds from
+`.xdg-home-mounts`, links nix-profile from `.nix-profile-target`) ->
+`network-lockdown.service` (oneshot: reads `.allowed-hosts`, applies
+iptables rules for `.no-internet-access` / `.disable-networking`) ->
+the three socat bridge units (`ssh-auth-bridge`, `gpg-agent-bridge`,
+`libvirt-bridge`, each gated on its `/run/env` port file) ->
+`agent-run.service` (oneshot: run the agent binary as the `agent`
+user) -> `agent-shutdown.service` (poweroff after agent-run exits).
 
 `agent-run` is `Type = oneshot` + `User = agent` + `StandardInput =
 tty`, attached to `/dev/ttyS0`. This gives the agent a real terminal
 (not a pty slave) on qemu's first serial port, which is what the
 launcher connects to when you `nix run .#claude-microvm`.
+
+Before shutdown, the direct and runsc paths write the agent's numeric
+status to `/run/env/.exit-code`. The host launcher validates and returns
+that status instead of mistaking QEMU's shutdown status for the agent's;
+an absent, malformed, or out-of-range status fails closed. The file is
+writable inside the single-purpose guest, while its host parent remains
+private at mode `0700`.
 
 `agent-run`'s PATH is built explicitly:
 `$HOME/.local/bin` (silences claude's "not in PATH" warning),
@@ -212,6 +221,11 @@ Each agent's `default.nix` declares
 This mirrors the Linux backend's [xdgRemap](bubblewrap.md#xdgremaps-opt-in)
 semantics, including the opt-in default.
 
+Hermes' cccp plugin cannot be added as a share once the guest is booted, so
+`microvm.sandboxInitLines` symlinks `${cccp}/share/cccp/plugin/hermes` to
+`$HERMES_HOME/plugins/cccp` in the guest (the store is a virtiofs share, and
+the same link resolves on the host when `~/.hermes` is the shared real dir).
+
 ## Design decisions
 
 ### Why microvm-nix over raw qemu + initramfs
@@ -230,15 +244,32 @@ run side by side (they use different `mountBase` dirs).
 
 ### virtiofsd startup is polled, not assumed
 
+The microvm.nix-generated supervisor configuration defaults to
+`user=root`. The launcher passes the invoking numeric UID explicitly,
+because wrappers are normally run by an unprivileged user and a non-root
+supervisor otherwise exits before creating either fixed-share socket.
+
 Every extra `--mount` spawns its own `virtiofsd` alongside the main
-share. The launcher polls the per-share unix socket for up to 50 x
-0.1 s before handing qemu the runtime args. If the socket never shows
-up *and* the daemon has already exited, the launcher prints a warning,
+share. The launcher polls the per-share unix socket for up to 300 x
+0.1 s before handing qemu the runtime args, covering the documented cold
+start without assuming a fully idle host. If an extra-share socket never
+shows up *and* the daemon has already exited, the launcher prints a warning,
 strips that device's `-chardev`/`-device` pair from the qemu argv (via
 `sed`) and removes the line from `/run/env/.mounts` so the guest's
-`sandbox-setup.service` doesn't try to mount a tag that was never
-attached. The agent boots without that share rather than hanging on
-an absent device.
+`sandbox-setup.service` doesn't try to mount a tag that was never attached.
+The agent boots without that share rather than hanging on an absent device.
+
+The two fixed shares are mandatory. Their supervisor is checked for early
+exit while the sockets are polled; failure prints the last 40 lines of
+`virtiofsd.log` before cleanup, so a privilege or source-path failure is
+diagnosable instead of being flattened into a readiness timeout.
+
+Writable extra shares translate the guest's fixed `agent` UID/GID 1000
+to the invoking host user's numeric UID/GID. This keeps project files
+owned by the caller in both directions: the unprivileged guest can edit a
+host-created worktree, and files it creates remain removable and usable by
+that same host worker. The translation is scoped to each explicitly shared
+path; it does not grant the guest another host identity or widen the path.
 
 ### Cleanup order matters
 

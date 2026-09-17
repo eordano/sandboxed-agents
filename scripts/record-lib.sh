@@ -7,8 +7,6 @@
 : "${ROWS:=60}"
 : "${ASCIINEMA:=asciinema}"
 
-# The marker must not appear verbatim in the prompt: the typed prompt echoes
-# into the recording, which would make the success grep below tautological.
 PROMPT_TEXT="reply only with the word B-A-N-A-N-A with the dashes removed, and nothing else"
 
 TM() { tmux -L "$TMUX_SOCK" "$@"; }
@@ -111,16 +109,10 @@ ask_opencode() {
   wait_for "$1" "^BANANA|> BANANA|│ BANANA" 180 || wait_for "$1" "BANANA" 30 || true
 }
 
-ask_aider() {
-  TM send-keys -t "$1" "/ask $PROMPT_TEXT" Enter
-  wait_for "$1" "BANANA" 90 || true
-}
-
 : "${PREROLL_AGENT_TIMEOUT:=240}"
 preroll_claude() { wait_for "$1" "Dark mode|trust this folder|Accessing workspace|Do you want to use|let.s get started|Welcome to Claude" "$PREROLL_AGENT_TIMEOUT"; }
 preroll_codex() { wait_for "$1" "trust the contents|OpenAI Codex|/model to change" "$PREROLL_AGENT_TIMEOUT"; }
 preroll_hermes() { wait_for "$1" "Welcome to Hermes" "$PREROLL_AGENT_TIMEOUT"; }
-preroll_aider() { wait_for "$1" "Aider v[0-9]" "$PREROLL_AGENT_TIMEOUT"; }
 preroll_opencode() { wait_for "$1" "Ask anything|OPENCODE" "$PREROLL_AGENT_TIMEOUT"; }
 preroll_gemini() { wait_for "$1" "Gemini CLI|trust the files" "$PREROLL_AGENT_TIMEOUT"; }
 
@@ -234,7 +226,6 @@ _preroll() {
 pr_claude() { _preroll claude "$1"; }
 pr_codex() { _preroll codex "$1"; }
 pr_hermes() { _preroll hermes "$1"; }
-pr_aider() { _preroll aider "$1"; }
 pr_opencode() { _preroll opencode "$1"; }
 pr_gemini() { _preroll gemini "$1"; }
 
@@ -270,10 +261,6 @@ run_all() {
   run hermes \
     "nix run $SRC#hermes$suffix -- $extra --sandbox-config $EMPTY_CFG --env OPENROUTER_API_KEY=$OPENROUTER_API_KEY chat -m google/gemini-2.5-flash" \
     pr_hermes setup_none ask_default
-
-  run aider \
-    "nix run $SRC#aider$suffix -- $extra --sandbox-config $EMPTY_CFG --env OPENROUTER_API_KEY=$OPENROUTER_API_KEY --model openrouter/openai/gpt-4o-mini --yes --no-git --no-show-release-notes" \
-    pr_aider setup_none ask_aider
 
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     run codex \

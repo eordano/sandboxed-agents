@@ -21,11 +21,28 @@ if [ -f /run/env/.mounts ]; then
       mount -t 9p -o "$_opts" "$tag" "$mpath" ||
         echo "Warning: failed to mount 9p $tag at $mpath" >&2
     else
-      mount -t virtiofs "$tag" "$mpath" ||
+      _opts=""
+      [ "$mode" = "ro" ] && _opts="-o ro"
+      mount -t virtiofs $_opts "$tag" "$mpath" ||
         echo "Warning: failed to mount virtiofs $tag at $mpath" >&2
     fi
-    chown agent:agent "$mpath" 2>/dev/null || true
+    [ "$mode" = "ro" ] || chown agent:agent "$mpath" 2>/dev/null || true
   done </run/env/.mounts
+fi
+
+if [ "${SANDBOX_REQUIRE_WORKDIR_MOUNT:-0}" = 1 ]; then
+  WORKDIR=$(cat /run/env/.workdir 2>/dev/null || true)
+  case "$WORKDIR" in
+    /*) ;;
+    *)
+      echo "Error: trusted supervisor requires an absolute worktree" >&2
+      exit 1
+      ;;
+  esac
+  if ! mountpoint -q "$WORKDIR"; then
+    echo "Error: trusted supervisor worktree is not an exact mounted filesystem: $WORKDIR" >&2
+    exit 1
+  fi
 fi
 
 if ! mountpoint -q "$REAL_HOME"; then

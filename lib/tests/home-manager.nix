@@ -12,8 +12,6 @@ pkgs.testers.nixosTest {
     {
       imports = [ home-manager-module ];
 
-      security.unprivilegedUsernsClone = true;
-
       users.users.testuser = {
         isNormalUser = true;
         home = "/home/testuser";
@@ -32,14 +30,6 @@ pkgs.testers.nixosTest {
               permissions = {
                 allow = [ "Bash(git log:*)" ];
               };
-            };
-          };
-
-          programs.aider-chat = {
-            enable = true;
-            package = agentPackages.aider;
-            settings = {
-              dark-mode = true;
             };
           };
 
@@ -75,13 +65,11 @@ pkgs.testers.nixosTest {
 
     machine.log("Test 1: host config files")
     machine.succeed("test -e /home/testuser/.claude/settings.json")
-    machine.succeed("test -e /home/testuser/.aider.conf.yml")
     machine.succeed("test -d /home/testuser/.config/opencode")
     machine.succeed("test -e /home/testuser/.gemini/settings.json")
 
     machine.log("Test 2: config visible in sandbox")
     machine.succeed(sh("claude", "cat ~/.claude/settings.json") + " | grep -q 'git log'")
-    machine.succeed(sh("aider", "cat ~/.aider.conf.yml") + " | grep -q dark-mode")
     machine.succeed(sh("opencode", "cat ~/.config/opencode/opencode.json") + " | grep -q autoupdate")
     machine.succeed(sh("gemini", "cat ~/.gemini/settings.json") + " | grep -q usageStatisticsEnabled")
 

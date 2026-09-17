@@ -2,9 +2,9 @@
   nixpkgs,
   opencode-src,
   gemini-src,
-  aider-src,
   hermes-agent,
   microvm,
+  cccp ? null,
 }:
 let
   hermes-agent-inputs = {
@@ -25,7 +25,6 @@ let
     "opencode"
     "codex"
     "gemini"
-    "aider"
   ];
   linuxSystems = [
     "x86_64-linux"
@@ -34,7 +33,6 @@ let
   agentSrcs = {
     opencode = opencode-src;
     gemini = gemini-src;
-    aider = aider-src;
   };
 in
 final: prev:
@@ -56,8 +54,6 @@ let
       ]
     else
       [ "bwrap" ];
-  # opencode's upstream package marks x86_64-darwin as a badPlatform, so the
-  # variant cannot even evaluate there.
   agentsForBackendSystem =
     backend:
     lib.subtractLists (lib.optional (system == "x86_64-darwin") "opencode") (
@@ -67,14 +63,32 @@ let
   specExtraArgs =
     name:
     lib.optionalAttrs (name == "hermes") {
-      hermes-agent = final.callPackage ./hermes-python312.nix {
+      # Upstream Hermes requires Python <3.14, so its package overlay pins 3.13.
+      hermes-agent = final.callPackage ./hermes-python313.nix {
+        claudeAgent = final.callPackage ../claude/claude-binary.nix { };
+        codexAgent = final.callPackage ../codex/codex-binary-prebuilt.nix { };
+        opencodeAgent =
+          if system == "x86_64-darwin" then
+            null
+          else
+            final.callPackage ../opencode/opencode-binary.nix { src = opencode-src; };
         hermes-agent-src = hermes-agent-inputs.src;
         inherit (hermes-agent-inputs) uv2nix pyproject-nix pyproject-build-systems;
       };
     }
     // lib.optionalAttrs (agentSrcs ? ${name}) { src = agentSrcs.${name}; };
 
-  loadSpec = name: final.callPackage (../. + "/${name}/default.nix") (specExtraArgs name);
+  cccpPackage =
+    if cccp != null && cccp.packages ? ${system} then cccp.packages.${system}.default else null;
+
+  loadSpec =
+    name:
+    let
+      f = import (../. + "/${name}/default.nix");
+    in
+    final.callPackage f (
+      specExtraArgs name // lib.optionalAttrs (lib.functionArgs f ? cccp) { cccp = cccpPackage; }
+    );
 
   mkAgent =
     backend: name:

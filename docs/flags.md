@@ -47,7 +47,9 @@ Two helpers in `lib/shell-blocks.nix` do the work:
 Each backend's CLI parser stashes `--allow-X` into a tristate `CLI_ENABLE_X`
 variable (`""` / `"0"` / `"1"`) instead of mutating `ENABLE_X` directly.
 After the config file is read, one `_resolve_bool` call per toggle
-collapses the three levels into the final `ENABLE_X`.
+collapses the three levels into the final `ENABLE_X`. The init, parser
+arms and resolve calls are generated from the `boolFlags` table in
+`lib/data.nix`; each backend picks its subset via `boolFlagSets`.
 
 ## Config file shape
 
@@ -63,7 +65,7 @@ set in config or not. `internetAccess` is a tri-state bool resolved via
 
 ## Repeatable flags have no env var override
 
-`--allow-host`, `--mount`, `--env`, and the backend escape-hatch flags
+`--allow-host` (config key `allowHosts`), `--mount`, `--env`, and the backend escape-hatch flags
 (`--extra-bubblewrap-args`, `--extra-runsc-args`, `--extra-qemu-args`,
 `--extra-sandbox-exec-args`) take values and can be passed multiple
 times. They intentionally have **no** `SANDBOX_*` environment variable,
@@ -72,7 +74,7 @@ because there's no clean way to pass a list through a single env var
 want users writing scripts that parse them).
 
 Use the config file instead: `paths`, `homePatterns`, `extraEnvs`,
-`mounts`, `extraBubblewrapArgs`, `extraRunscArgs`, `extraQemuArgs`, and
+`allowHosts`, `mounts`, `extraBubblewrapArgs`, `extraRunscArgs`, `extraQemuArgs`, and
 `extraSandboxExecArgs` are the persistent equivalents. CLI args are
 appended to whatever the config set.
 
@@ -173,13 +175,9 @@ either group pulls in.
 
 ## Flag reference
 
-Every single-value boolean toggle below follows the precedence described
-above (CLI > env > config > default) and has a matching `--no-...`
-counterpart. Repeatable flags (`--allow-host`, `--mount`, `--env`, and
-the backend escape-hatch flags `--extra-bubblewrap-args`,
-`--extra-runsc-args`, `--extra-qemu-args`,
-`--extra-sandbox-exec-args`) have no env-var override -- use the config
-keys instead.
+Every boolean toggle below follows the [precedence](#precedence) above
+and has a `--no-...` counterpart; [repeatable flags](#repeatable-flags-have-no-env-var-override)
+have no env-var override.
 
 Support column: **y** = wired, **n** = warn and ignore, **p** = partial,
 **x** = no-op (accepted for parity, does nothing).
@@ -282,6 +280,7 @@ launches inside runsc will be slow. See
 | `--allow-host HOST` | -- | -- | y | y | n | y |
 | `--disable-networking` | `disableNetworking` | `SANDBOX_DISABLE_NETWORKING` | y | y | n | y |
 | `--socks-proxy HOST:PORT` | `socksProxy` | `SANDBOX_SOCKS_PROXY` | y | y | n | n |
+| `--privacy-filter` | `privacyFilter` | `SANDBOX_PRIVACY_FILTER` | y | y | n | n |
 | `--runsc` | `runsc` | `SANDBOX_RUNSC` | n | n | n | y |
 
 - **`--allow-home-access`** -- Linux disables the "PWD shadows HOME"
@@ -299,6 +298,11 @@ launches inside runsc will be slow. See
 - **`--disable-networking`** -- forces `INTERNET_ACCESS=0` and drops
   non-localhost egress (ACCEPT lo + `--allow-host` IPs). microvm
   writes `/run/env/.disable-networking` for the guest. macOS warns.
+- **`--privacy-filter`** -- Linux only, off by default. Routes through the
+  separately running privacy-filter SOCKS proxy. Uses an explicit `socksProxy`
+  / `SANDBOX_SOCKS_PROXY` when set; otherwise connects to the host loopback
+  proxy through the slirp gateway at `10.0.2.2:1080`. macOS and microvm warn.
+
 - **`--socks-proxy`** -- Linux only: user+net namespace with
   slirp4netns + tun2socks (see [tun2socks.md](tun2socks.md));
   accepts `HOST:PORT`, `:PORT`, `socks5://HOST:PORT`, IPv6 literals
@@ -321,6 +325,8 @@ launches inside runsc will be slow. See
 | `--mount-common-home-folders` | `mountCommonHomeFolders` | `SANDBOX_MOUNT_COMMON_HOME` | y | y | y | y |
 | `--mount-tmp` | `mountTmp` | `SANDBOX_MOUNT_TMP` | y | y | x | y |
 | `--env KEY=VAL` | `extraEnvs` (array) | -- | y | y | y | y |
+| `--forward-env PATTERN` | `forwardEnvs` (array) | -- | y | y | y | y |
+| `--forward-host-loopback PORT` | -- | -- | n | n | n | y |
 | `--extra-bubblewrap-args` | `extraBubblewrapArgs` | -- | n | y | n | n |
 | `--extra-runsc-args` | `extraRunscArgs` | -- | y | n | n | n |
 | `--extra-qemu-args` | `extraQemuArgs` | -- | n | n | n | y |
@@ -339,7 +345,8 @@ launches inside runsc will be slow. See
   up from the cwd > `$XDG_CONFIG_HOME/<agent>-sandbox.json`). Multi-profile =
   multiple files picked via this flag.
 - **`--mount PATH`** -- repeatable. Linux uses bwrap bind syntax
-  (`PATH`, `ro:PATH`, `HOST:GUEST`). macOS: `PATH` -> RW_PATHS,
+  (`PATH`, `ro:PATH`, `HOST:GUEST`); config `paths` entries take the same
+  forms, and a missing host side drops the entry silently. macOS: `PATH` -> RW_PATHS,
   `ro:PATH` -> RO_PATHS, no remap. microvm: directories are virtiofs
   shares (`ro:` supported); single files are staged -- copied into the
   guest at boot, writes don't propagate back. No `HOST:GUEST`.
@@ -355,6 +362,19 @@ launches inside runsc will be slow. See
 - **`--env KEY=VAL`** -- repeatable. Linux: `bwrap --setenv`. macOS:
   prepended to `env(1)`. microvm: appended to `/run/env/.env` which
   the guest sources. Config `extraEnvs` is an array of `"KEY=VAL"`.
+- **`--forward-env PATTERN`** -- repeatable. Forward every variable of the
+  caller's environment whose NAME matches the shell glob PATTERN
+  (`BUZZ_*`, `NOSTR_PRIVATE_KEY`) into the sandbox with its current value.
+  Unlike `--env` the value is not written into the config, so a secret
+  minted per launch by a parent process (the Buzz harness's per-agent
+  key) reaches the agent without ever being stored. Matched after
+  `extraEnvs`, so an explicit `KEY=VAL` wins over a forwarded one.
+  Config `forwardEnvs` is an array of patterns.
+- **`--forward-host-loopback PORT`** -- repeatable, microvm only. QEMU exposes
+  the host's `127.0.0.1:PORT` through a per-connection bridge at
+  `10.0.2.100:PORT` inside the guest. The host service stays loopback-only;
+  combine this with `--disable-networking --allow-host 10.0.2.100` when the
+  guest must reach only explicitly selected local brokers.
 - **`--extra-bubblewrap-args` / `--extra-runsc-args` /
   `--extra-qemu-args` / `--extra-sandbox-exec-args`** -- passed
   verbatim to the named backend's binary; config-array equivalents

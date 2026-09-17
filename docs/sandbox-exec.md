@@ -113,6 +113,23 @@ no-op on macOS. If anything ever needs the Linux-style XDG->dotfile
 mapping on macOS, we'd have to plumb it through the seatbelt profile,
 which seatbelt doesn't really support (no bind-mount equivalent).
 
+What macOS *does* honour is the plain XDG base directories for
+home-allow entries: `.config/...`, `.local/share/...` and `.cache/...`
+entries are resolved against `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME` /
+`$XDG_CACHE_HOME` (same `_home_entry_host` helper as Linux) and the
+resolved path is what gets `file-write*`. Because there is no ephemeral
+home to bind a redirect into, the three variables are also forwarded
+into the sandbox environment when set, so the agent itself resolves the
+same directory the launcher just allowed. Without that forwarding an
+`XDG_DATA_HOME` override was silently ignored: the launcher allowed
+`$XDG_DATA_HOME/opencode` while opencode, seeing no variable, wrote to
+`~/.local/share/opencode`.
+
+The same no-bind-mount limit applies to Hermes' cccp plugin: on Linux it is
+bound from the store onto `~/.hermes/plugins/cccp`; on macOS
+`sandboxInitLines` symlinks it there in the real home instead (`uname -s`
+check, guarded so a user's own copy is never replaced).
+
 ## Known limits
 
 - **No network isolation.** seatbelt can block `network-outbound` but

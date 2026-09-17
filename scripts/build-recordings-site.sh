@@ -91,7 +91,7 @@ cat >"$SITE_DIR/index.html" <<'HTML'
 <body>
   <header>
     <h1>sandboxed-agents -- terminal recordings</h1>
-    <p>Six agents x four backends (bubblewrap, runsc, microvm, microvm+runsc). Each asks the agent to reply with the word BANANA.</p>
+    <p>Five agents x four backends (bubblewrap, runsc, microvm, microvm+runsc). Each asks the agent to reply with the word BANANA.</p>
   </header>
   <div class="toolbar">
     <div class="group">
@@ -109,7 +109,6 @@ cat >"$SITE_DIR/index.html" <<'HTML'
       <button data-agent="codex" class="active">codex</button>
       <button data-agent="gemini" class="active">gemini</button>
       <button data-agent="hermes" class="active">hermes</button>
-      <button data-agent="aider" class="active">aider</button>
       <button data-agent="opencode" class="active">opencode</button>
       <button class="bulk" data-bulk="agent" data-action="all">all</button>
       <button class="bulk" data-bulk="agent" data-action="none">none</button>
@@ -119,7 +118,7 @@ cat >"$SITE_DIR/index.html" <<'HTML'
 
   <script src="vendor/asciinema-player.min.js"></script>
   <script>
-    const AGENTS = ["claude", "codex", "gemini", "hermes", "aider", "opencode"];
+    const AGENTS = ["claude", "codex", "gemini", "hermes", "opencode"];
     const BACKENDS = ["bwrap", "runsc", "microvm", "microvm-runsc"];
     const grid = document.getElementById("grid");
 

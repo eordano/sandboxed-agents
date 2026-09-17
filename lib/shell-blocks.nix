@@ -92,7 +92,9 @@ let
             (.paths               // [] | .[]? | "P\t\(.)"),
             (.homePatterns        // [] | .[]? | "H\t\(.)"),
             (.extraEnvs           // [] | .[]? | "E\t\(.)"),
+            (.forwardEnvs         // [] | .[]? | "F\t\(.)"),
             (.mounts              // [] | .[]? | "M\t\(.)"),
+            (.allowHosts          // [] | .[]? | "A\t\(.)"),
             (.extraBubblewrapArgs  // [] | .[]? | "W\t\(.)"),
             (.extraRunscArgs       // [] | .[]? | "R\t\(.)"),
             (.extraSandboxExecArgs // [] | .[]? | "X\t\(.)"),
@@ -114,18 +116,22 @@ let
               "~/"*) _expanded="$HOME/''${_rest#~/}" ;;
               *)     _expanded="$_rest" ;;
             esac
-            [ -e "$_expanded" ] && _CFG_PATHS+=( "$_expanded" )
+            _probe="''${_expanded#ro:}"; _probe="''${_probe#dev:}"
+            case "$_probe" in *:*) _probe="''${_probe%%:*}" ;; esac
+            [ -e "$_probe" ] && _CFG_PATHS+=( "$_expanded" )
             ;;
           H) [ -e "$HOME/$_rest" ] && _CFG_HOME_PATTERNS+=( "$HOME/$_rest" ) ;;
           E) [ -n "$_rest" ] && EXTRA_ENVS+=( "$_rest" ) ;;
+          F) [ -n "$_rest" ] && FORWARD_ENVS+=( "$_rest" ) ;;
           M) [ -n "$_rest" ] && MOUNT_GROUPS+=( "$_rest" ) ;;
+          A) [ -n "$_rest" ] && ALLOWED_HOSTS+=( "$_rest" ) ;;
           W) [ -n "$_rest" ] && _CFG_EXTRA_BWRAP_ARGS+=( "$_rest" ) ;;
           R) [ -n "$_rest" ] && _CFG_EXTRA_RUNSC_ARGS+=( "$_rest" ) ;;
           X) [ -n "$_rest" ] && _CFG_EXTRA_SBX_EXEC_ARGS+=( "$_rest" ) ;;
           Q) [ -n "$_rest" ] && _CFG_EXTRA_QEMU_ARGS+=( "$_rest" ) ;;
         esac
       done <<< "$_CFG_RAW"
-      unset _CFG_RAW _tag _rest _k _v _expanded
+      unset _CFG_RAW _tag _rest _k _v _expanded _probe
 
       _cfg_get()  { printf '%s' "''${_CFG_MAP[$1]:-}"; }
       _cfg_bool() { [ "''${_CFG_MAP[$1]:-}" = "true" ]; }
@@ -201,12 +207,17 @@ let
       entries = builtins.concatStringsSep " " quoted;
     in
     ''
+      _home_entry_host() {
+        case "$1" in
+          .config/*)      printf '%s' "$_REAL_CONFIG_HOME/''${1#.config/}" ;;
+          .local/share/*) printf '%s' "$_REAL_DATA_HOME/''${1#.local/share/}" ;;
+          .cache/*)       printf '%s' "$_REAL_CACHE_HOME/''${1#.cache/}" ;;
+          *)              printf '%s' "$HOME/$1" ;;
+        esac
+      }
+
       for _entry in ${entries}; do
-        if [[ "$_entry" == .config/* ]]; then
-          _path="$_REAL_CONFIG_HOME/''${_entry#.config/}"
-        else
-          _path="$HOME/$_entry"
-        fi
+        _path="$(_home_entry_host "$_entry")"
         [ -f "$_path" ] && continue
         if [ -d "$_path" ]; then
           :
@@ -291,6 +302,50 @@ let
           ${builtins.concatStringsSep "\n" (map mkDotfile xdgRemaps)}
         fi
       '';
+
+  boolFlagBlocks =
+    setName:
+    let
+      flags = map (k: data.boolFlags.${k} // { cfg = k; }) data.boolFlagSets.${setName};
+      off =
+        f:
+        f.off or (
+          [ "no-${f.on}" ]
+          ++ lib.optional (lib.hasPrefix "allow-" f.on) "no-${lib.removePrefix "allow-" f.on}"
+        );
+      dflt = f: toString (f.default or 0);
+      lines = g: lib.concatMapStringsSep "\n" g flags;
+    in
+    {
+      init = lines (f: "${f.var}=${dflt f}; CLI_${f.var}=\"\"");
+      cases = lines (f: ''
+        --${f.on}) CLI_${f.var}=1; shift ;;
+        ${lib.concatMapStringsSep "|" (o: "--${o}") (off f)}) CLI_${f.var}=0; shift ;;'');
+      resolve = lines (f: "_resolve_bool ${f.var} CLI_${f.var} ${f.env} ${f.cfg} ${dflt f}");
+    };
+
+  yoloBlocks = {
+    help = lib.optionalString enableYolo ''
+      echo "  --yolo                   Skip permission prompts (claude only)      env SANDBOX_YOLO"
+      echo "  --no-yolo                Force prompts even if config/env enables it"'';
+    init = lib.optionalString enableYolo ''
+      YOLO_CLI=""
+      _YOLO_CONFIG=0'';
+    cases = lib.optionalString enableYolo ''
+      --yolo) YOLO_CLI=1; shift ;;
+      --no-yolo) YOLO_CLI=0; shift ;;'';
+  };
+
+  xdgResolveBlock = ''
+    _CFG_XDG=$(_cfg_tristate xdgRemap 2>/dev/null || true)
+    case "$_CFG_XDG" in 1) XDG_PATH_FIX=1 ;; 0) XDG_PATH_FIX=0 ;; esac
+    _CFG_NOXDG=$(_cfg_tristate noXdgRemap 2>/dev/null || true)
+    case "$_CFG_NOXDG" in 0) XDG_PATH_FIX=1 ;; 1) XDG_PATH_FIX=0 ;; esac
+    case "''${SANDBOX_XDG_REMAP:-}" in
+      1|true|yes|on)  XDG_PATH_FIX=1 ;;
+      0|false|no|off) XDG_PATH_FIX=0 ;;
+    esac
+  '';
 
   mkBackendDispatch = selfBackend: ''
     # Shared by every argv parser: `shift 2 || _reqval "$1"`. A failed
@@ -414,5 +469,8 @@ in
     linuxExtraEnvLines
     darwinExtraEnvLines
     mkBackendDispatch
+    boolFlagBlocks
+    yoloBlocks
+    xdgResolveBlock
     ;
 }

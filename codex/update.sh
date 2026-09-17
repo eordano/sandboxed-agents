@@ -37,9 +37,15 @@ declare -A ASSETS=(
   ["aarch64-darwin"]="codex-aarch64-apple-darwin"
 )
 
-# Prefetch every platform before touching the file, so a missing asset
-# can't leave a half-updated version/hash mix behind.
+declare -A HOST_ASSETS=(
+  ["x86_64-linux"]="codex-code-mode-host-x86_64-unknown-linux-musl"
+  ["aarch64-linux"]="codex-code-mode-host-aarch64-unknown-linux-musl"
+  ["x86_64-darwin"]="codex-code-mode-host-x86_64-apple-darwin"
+  ["aarch64-darwin"]="codex-code-mode-host-aarch64-apple-darwin"
+)
+
 declare -A HASHES=()
+declare -A HOST_HASHES=()
 for nix_system in "${!ASSETS[@]}"; do
   asset="${ASSETS[$nix_system]}"
   url="https://github.com/$REPO/releases/download/$LATEST_TAG/$asset.tar.gz"
@@ -48,10 +54,19 @@ for nix_system in "${!ASSETS[@]}"; do
     exit 1
   fi
   HASHES[$nix_system]=$(nix-hash --to-sri --type sha256 "$raw_hash")
+
+  host_asset="${HOST_ASSETS[$nix_system]}"
+  host_url="https://github.com/$REPO/releases/download/$LATEST_TAG/$host_asset.tar.gz"
+  if ! raw_hash=$(nix-prefetch-url --type sha256 "$host_url" 2>/dev/null); then
+    echo "ERROR: $host_asset.tar.gz not available for $LATEST_TAG; aborting without changes." >&2
+    exit 1
+  fi
+  HOST_HASHES[$nix_system]=$(nix-hash --to-sri --type sha256 "$raw_hash")
 done
 
 for nix_system in "${!HASHES[@]}"; do
-  sed -i "/\"$nix_system\"/,/};/ s|sha256 = \"[^\"]*\"|sha256 = \"${HASHES[$nix_system]}\"|" "$PREBUILT_NIX"
+  sed -i "/\"$nix_system\"/,/};/ s|^\( *\)sha256 = \"[^\"]*\"|\1sha256 = \"${HASHES[$nix_system]}\"|" "$PREBUILT_NIX"
+  sed -i "/\"$nix_system\"/,/};/ s|codeModeHostSha256 = \"[^\"]*\"|codeModeHostSha256 = \"${HOST_HASHES[$nix_system]}\"|" "$PREBUILT_NIX"
 done
 sed -i "s/version = \"[^\"]*\";/version = \"$LATEST_VERSION\";/" "$PREBUILT_NIX"
 echo "Updated codex $CURRENT_VERSION -> $LATEST_VERSION"

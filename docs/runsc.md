@@ -33,8 +33,10 @@ A fresh bundle is materialized per invocation under
 - **`config.json`** -- built per-invocation by splicing runtime mounts /
   env / args / uid-gid / cwd / platform into
   `${bundle}/config-template.json`.
-- **`state/`** -- `runsc --root` directory; deleted on exit by the
-  `_cleanup` trap (`runsc ... delete -force` then `rm -rf`).
+- **`state/`** -- `runsc --root` directory. The whole bundle is deleted
+  on exit by the `_cleanup` trap (`runsc ... delete -force` then `rm -rf`);
+  a bundle whose wrapper died by SIGKILL is removed by the next launch's
+  `_sweep_stale` (see [Process lifetime](#process-lifetime-and-cleanup)).
 
 ### Process / security
 
@@ -127,6 +129,59 @@ its own extras (`SSH_AUTH_SOCK`, `GPG_AGENT_INFO`/`GPG_TTY`, `DISPLAY`,
 `CUDA_VISIBLE_DEVICES`). `--env KEY=VALUE` and config `extraEnvs` append;
 the final map is written verbatim into `process.env`.
 
+## Process lifetime and cleanup
+
+The wrapper does **not** `exec` runsc. It starts
+`env --default-signal setpriv --pdeathsig=SIGKILL -- runsc ... run` as a
+child, forwards `INT`/`TERM`/`HUP` to it, waits, and exits with the child's
+status. Until 2026-09-06 the script ended in `exec runsc`, which replaced
+bash and with it the `trap _cleanup EXIT`: the cleanup code was dead on the
+default path, and every launch (clean exit or killed) left
+`/tmp/<agent>-runsc-bundle-$$` behind (114 on one desktop, on a ZFS root,
+not tmpfs). The `-home-$$`/`-tmp-$$` dirs are unrelated: they are kept
+unless `cleanTmp` is set, before and after this change. Process orphans
+were never the problem: `runsc run` is attached mode, so gVisor sets
+`PDEATHSIG=SIGKILL` on the sandbox and the `--rootless` re-exec child, and
+killing the `runsc run` pid with TERM or KILL tears down gofer and sandbox
+within seconds.
+
+Why the three pieces:
+
+- `setpriv --pdeathsig=SIGKILL` keeps that guarantee now that bash is the
+  pid a harness sees: SIGKILL to the wrapper kills runsc, whose own
+  pdeathsig kills the sandbox. Nothing polls.
+- `env --default-signal` undoes bash's rule that an asynchronous child of a
+  non-interactive shell ignores `INT` and `QUIT` (`SIG_IGN` survives
+  `exec`), so a terminal `^C` still reaches runsc directly.
+- The trap forwards signals that were sent to the wrapper alone
+  (`kill <pid>`, a harness stopping one agent). Signals that hit the whole
+  process group (terminal, `timeout`, systemd) reach runsc twice, once
+  directly and once forwarded; the agents in use treat a repeated
+  TERM/INT as idempotent.
+
+`_sweep_stale` runs at every launch after the config is parsed: for each
+`${TMPDIR:-/tmp}/<agent>-<backend>-*-<pid>` whose pid no longer exists it
+removes the bundle and the coordination files, and the `-home-`/`-tmp-`
+dirs only when `cleanTmp` is set (without it those are kept on purpose,
+exactly as after a normal exit). This is the only path that covers a
+SIGKILLed wrapper, and it needs no timer or tmpfiles rule. Liveness is
+`[ -d /proc/<pid> ]`, not `kill -0`, so another user's live pid on a shared
+`/tmp` is not classed dead.
+
+What the change buys is bundle cleanup: immediate after a normal exit or a
+caught signal, one launch late after SIGKILL (nothing can run a trap then).
+Sandbox teardown on SIGKILL was already immediate through gVisor's own
+pdeathsig, so it is not orphan prevention. The exit status a caller sees is
+unchanged: runsc's own, e.g. 255 after a TERM, measured identical on the
+`exec` wrapper and this one.
+
+A leaked `config.json` is the forensic record of a launch: `process.args`,
+`process.env`, `process.cwd` and the mount table are exactly what the
+harness asked for. That is how the 2026-09-06 Buzz incident was diagnosed
+(bundles from the failure window had `process.args` without `acp`).
+Bundles that `_sweep_stale` would remove can be preserved by copying them
+before the next launch of the same agent.
+
 ## Compatibility limits
 
 These come from gVisor's syscall coverage, not this wrapper:
@@ -136,6 +191,17 @@ These come from gVisor's syscall coverage, not this wrapper:
   filesystems, a few async runtimes) don't.
 - **`perf_event_open` is partial** -- most BPF profilers fail; `strace`
   works.
+- **File locks are per sandbox** -- `fcntl`/`flock` locks are served from a
+  table inside the sentry, never from the host (`Range lock using gofer
+  file handled internally` in the debug log). Two sandboxes sharing a file
+  lock nothing against each other. SQLite in WAL mode on a shared `$HOME`
+  file is the concrete casualty: each new connection truncates the `-shm`
+  index as if it were alone, which `SIGBUS`es other sandboxes that have it
+  `MAP_SHARED` (opencode's `opencode-stable.db-shm`, 3-5 of 30 concurrent
+  `opencode acp` starts on one host), and two writers can both hold the WRITER
+  lock. `--file-access-mounts` does not help (caching mode only) and there
+  is no per-mount option; use `<agent>-bwrap` or separate data dirs for
+  instances that share a lock-protected file.
 - **FUSE is partial** -- read-heavy FUSE works; exotic write paths hit
   unimplemented ops.
 - **`--allow-nvidia` via `--nvproxy`** (auto-added) -- CUDA on supported

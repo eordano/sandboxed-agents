@@ -3,3 +3,6 @@ compression:
 terminal:
   backend: local
   cwd: "."
+plugins:
+  enabled:
+    - cccp

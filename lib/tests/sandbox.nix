@@ -28,14 +28,16 @@ pkgs.testers.nixosTest {
       environment.systemPackages = [
         pkg
         pkgs.curl
+        pkgs.microsocks
       ];
-      security.unprivilegedUsernsClone = true;
       users.users.testuser = {
         isNormalUser = true;
         home = "/home/testuser";
       };
-      # Loopback-only service: reachable from the host, must not be reachable
-      # from inside the sandbox's network namespace.
+      systemd.services.privacy-proxy-fixture = {
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig.ExecStart = "${pkgs.microsocks}/bin/microsocks -i 127.0.0.1 -p 1080";
+      };
       systemd.services.loopback-http = {
         wantedBy = [ "multi-user.target" ];
         script = ''
@@ -120,6 +122,8 @@ pkgs.testers.nixosTest {
 
     start_all()
     machine.wait_for_unit("multi-user.target")
+    machine.wait_for_unit("privacy-proxy-fixture.service")
+    machine.wait_for_open_port(1080)
     server.wait_for_unit("microsocks.service")
     server.wait_for_unit("http.service")
     server.wait_for_unit("mock-api.service")
@@ -161,6 +165,18 @@ pkgs.testers.nixosTest {
     machine.succeed(sh_socks(f"curl -sf http://{server_ip}:8080/index.html") + " | grep -q proxy-test-ok")
     machine.succeed(sh_socks(f"curl -sf http://{another_ip}:8080/index.html") + " | grep -q another-test-ok")
 
+    machine.log("Test 4a: privacy filter gate and precedence")
+    machine.fail(sh("ip link show tun0"))
+    machine.succeed(sh(f"curl -sf http://{server_ip}:8080/index.html", "--privacy-filter") + " | grep -q proxy-test-ok")
+    machine.succeed(
+        f"echo 'ip link show tun0' | su - testuser -c 'cd {wd} && SANDBOX_PRIVACY_FILTER=1 ${agent} --sandbox-open-shell'"
+    )
+    machine.succeed("echo '{\"privacyFilter\":true}' > /tmp/privacy-filter-config.json && chown testuser /tmp/privacy-filter-config.json")
+    machine.succeed(sh("ip link show tun0", "--sandbox-config /tmp/privacy-filter-config.json"))
+    machine.fail(
+        f"echo 'ip link show tun0' | su - testuser -c 'cd {wd} && SANDBOX_PRIVACY_FILTER=1 ${agent} --sandbox-open-shell --no-privacy-filter'"
+    )
+
     machine.succeed(sh(f"curl -sf http://{server_ip}:8080/index.html") + " | grep -q proxy-test-ok")
     machine.succeed(sh(f"curl -sf http://{blocked_ip}:8080/index.html") + " | grep -q you-should-not-see-this")
 
@@ -186,6 +202,16 @@ pkgs.testers.nixosTest {
 
     machine.succeed(sh_allowhost(f"curl -sf http://{server_ip}:8080/index.html") + " | grep -q proxy-test-ok")
     machine.fail(sh_allowhost(f"curl -sf --max-time 5 http://{blocked_ip}:8080/index.html"))
+
+    machine.log("Test 7b: allowHosts via config file (not the CLI flag)")
+    machine.succeed(
+        f"echo '{{\"allowHosts\": [\"{server_ip}\"]}}' > /tmp/allowhosts-config.json && chown testuser /tmp/allowhosts-config.json"
+    )
+    def sh_allowhost_cfg(cmd):
+        return sh(cmd, "--disable-networking --sandbox-config /tmp/allowhosts-config.json")
+
+    machine.succeed(sh_allowhost_cfg(f"curl -sf http://{server_ip}:8080/index.html") + " | grep -q proxy-test-ok")
+    machine.fail(sh_allowhost_cfg(f"curl -sf --max-time 5 http://{blocked_ip}:8080/index.html"))
 
     machine.log("Test 8: --disable-networking blocks public")
     machine.succeed(sh("curl -sf --max-time 5 http://198.51.100.1:8080/index.html") + " | grep -q you-should-not-see-this")
@@ -271,6 +297,24 @@ pkgs.testers.nixosTest {
     }
 
     machine.log("Test 13: data persistence")
+    ${pkgs.lib.optionalString
+      (builtins.elem agent [
+        "codex"
+        "opencode"
+      ])
+      ''
+        # .local/share/<agent> is on the agent's home-allow list; with XDG_DATA_HOME set on the
+        # host it must be bound from $XDG_DATA_HOME/<agent>, not from ~/.local/share/<agent>.
+        machine.succeed("su - testuser -c 'mkdir -p /home/testuser/xdg-data/${agent} /home/testuser/.local/share/${agent}'")
+        machine.succeed(
+            f"echo 'echo XDG_CANARY > ~/.local/share/${agent}/xdg-canary' | "
+            f"su - testuser -c 'cd {wd} && XDG_DATA_HOME=/home/testuser/xdg-data ${agent} --sandbox-open-shell'"
+        )
+        machine.succeed("grep -q XDG_CANARY /home/testuser/xdg-data/${agent}/xdg-canary")
+        machine.fail("test -e /home/testuser/.local/share/${agent}/xdg-canary")
+      ''
+    }
+
     machine.succeed(sh("echo PERSIST_CANARY > testproject-file.txt && echo EPHEMERAL_CANARY > ~/ephemeral-file.txt"))
     machine.succeed(sh("cat testproject-file.txt") + " | grep -q PERSIST_CANARY")
     machine.fail(sh("cat ~/ephemeral-file.txt"))

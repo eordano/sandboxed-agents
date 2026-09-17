@@ -26,8 +26,6 @@ buildGoModule {
       --replace-fail '"/sbin/ldconfig"' '"${glibc}/bin/ldconfig"'
   '';
 
-  # Upstream's go.mod is not `go mod tidy`-clean (they build with bazel);
-  # proxyVendor skips the vendor consistency check that would reject it.
   proxyVendor = true;
   vendorHash = "sha256-C8jWHf8yULItemzke7hCSfWeWVY2MwrrMNKQ0YdBfRo=";
 

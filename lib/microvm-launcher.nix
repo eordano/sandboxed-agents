@@ -15,13 +15,20 @@
   configParseBlock,
   yoloInjectionBlock,
   mkBackendDispatch,
+  boolFlagBlocks,
+  yoloBlocks,
+  xdgResolveBlock,
   xdgRemaps ? [ ],
-  enableYolo ? false,
   useVirtiofs ? true,
   isDarwin ? false,
+  guestAgentUid,
+  guestAgentGid,
+  trustedSupervisor ? false,
+  cpuModel ? null,
 }:
 
 let
+  flagBlocks = boolFlagBlocks "microvm";
   xdgRemapSetupBlock =
     if xdgRemaps == [ ] then
       ""
@@ -80,6 +87,7 @@ writeShellScript "${agentName}-microvm" ''
     --allow-host HOST        Allow traffic to HOST (repeatable -- no env var)
     --disable-networking     Block all non-localhost connections                  env SANDBOX_DISABLE_NETWORKING
     --runsc                  Wrap agent execution inside gVisor (runsc) in-guest  env SANDBOX_RUNSC
+    --privacy-filter         Unsupported in microvm; accepted for parity            env SANDBOX_PRIVACY_FILTER
 
     --backend BACKEND        Re-exec wrapper under BACKEND (bwrap|runsc|microvm)  env SANDBOX_BACKEND
                              Also reads `backend` from ${configFileName}.
@@ -89,118 +97,57 @@ writeShellScript "${agentName}-microvm" ''
     --mount-common-home-folders  Share ~/.cargo, ~/.npm, ~/.go, etc.              env SANDBOX_MOUNT_COMMON_HOME
     --mount-tmp              Share /tmp into the VM                               env SANDBOX_MOUNT_TMP
     --env KEY=VALUE          Pass env var into the VM (repeatable)
+    --workdir-read-only     Mount the invocation working directory read-only
+                             (trusted-supervisor builds only)
+    --forward-host-loopback PORT
+                             Expose host 127.0.0.1:PORT at guest 10.0.2.100:PORT
     --extra-qemu-args ARG    Pass ARG verbatim to the QEMU runtime (repeatable)
 
     --sandbox-show-config    Print VM config without executing                    env DRY_RUN
     --sandbox-open-shell     Drop into a shell inside the VM                      env START_SHELL
     --sandbox-help           Show this help
   HELP
-      ${
-        if enableYolo then
-          ''
-            echo "  --yolo                   Skip permission prompts (claude only)      env SANDBOX_YOLO"
-            echo "  --no-yolo                Force prompts even if config/env enables it"''
-        else
-          ""
-      }
+      ${yoloBlocks.help}
       echo
       echo "Wrapper: $SELF_BIN"
       [ -f "$DOC_README" ] && echo "README:  $DOC_README"
     }
 
-    ENABLE_SSH=0
-    ENABLE_SSH_WRITE=0
-    ENABLE_GPG=0
-    ENABLE_GIT=0
-    ENABLE_DOCKER=0
-    ENABLE_LIBVIRT=0
-    ENABLE_NVIDIA=0
-    ENABLE_FUSE=0
-    INTERNET_ACCESS=1
-    DISABLE_NETWORKING=0
-    ENABLE_RUNSC=0
-    MOUNT_HOME_CACHE=0
-    MOUNT_TMP=0
-    MOUNT_COMMON_HOME=0
-
-    CLI_ENABLE_SSH=""
-    CLI_ENABLE_SSH_WRITE=""
-    CLI_ENABLE_GPG=""
-    CLI_ENABLE_GIT=""
-    CLI_ENABLE_DOCKER=""
-    CLI_ENABLE_LIBVIRT=""
-    CLI_ENABLE_NVIDIA=""
-    CLI_ENABLE_FUSE=""
-    CLI_INTERNET_ACCESS=""
-    CLI_DISABLE_NETWORKING=""
-    CLI_ENABLE_RUNSC=""
-    CLI_MOUNT_HOME_CACHE=""
-    CLI_MOUNT_TMP=""
-    CLI_MOUNT_COMMON_HOME=""
+    ${flagBlocks.init}
 
     SANDBOX_CONFIG_FILE="''${SANDBOX_CONFIG_FILE:-}"
     ALLOWED_HOSTS=()
     MOUNT_GROUPS=()
     EXTRA_MOUNTS=()
     EXTRA_ENVS=()
+    HOST_LOOPBACK_FORWARDS=()
     EXTRA_QEMU_ARGS=()
     AGENT_ARGS=()
+    TRUSTED_CONTROL_FILE=""
+    WORKDIR_READ_ONLY=0
     DRY_RUN=""
     START_SHELL=""
     _FILES_TO_STAGE=()
-    ${lib.optionalString enableYolo ''
-      YOLO_CLI=""
-      _YOLO_CONFIG=0
-    ''}
+    ${yoloBlocks.init}
 
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        --allow-ssh)            CLI_ENABLE_SSH=1; shift ;;
-        --no-allow-ssh|--no-ssh)   CLI_ENABLE_SSH=0; shift ;;
-        --allow-ssh-write)      CLI_ENABLE_SSH_WRITE=1; shift ;;
-        --no-allow-ssh-write|--no-ssh-write) CLI_ENABLE_SSH_WRITE=0; shift ;;
-        --allow-gpg)            CLI_ENABLE_GPG=1; shift ;;
-        --no-allow-gpg|--no-gpg)   CLI_ENABLE_GPG=0; shift ;;
-        --allow-git)            CLI_ENABLE_GIT=1; shift ;;
-        --no-allow-git|--no-git)   CLI_ENABLE_GIT=0; shift ;;
-        --allow-docker)         CLI_ENABLE_DOCKER=1; shift ;;
-        --no-allow-docker|--no-docker) CLI_ENABLE_DOCKER=0; shift ;;
-        --allow-libvirt)        CLI_ENABLE_LIBVIRT=1; shift ;;
-        --no-allow-libvirt|--no-libvirt) CLI_ENABLE_LIBVIRT=0; shift ;;
-        --allow-nvidia)         CLI_ENABLE_NVIDIA=1; shift ;;
-        --no-allow-nvidia|--no-nvidia) CLI_ENABLE_NVIDIA=0; shift ;;
-        --allow-fuse)           CLI_ENABLE_FUSE=1; shift ;;
-        --no-allow-fuse|--no-fuse) CLI_ENABLE_FUSE=0; shift ;;
+        ${flagBlocks.cases}
         --sandbox-config)    SANDBOX_CONFIG_FILE="''${2:-}"; shift 2 || _reqval "$1" ;;
         --sandbox-config=*)  SANDBOX_CONFIG_FILE="''${1#*=}"; shift ;;
-        --allow-internet-access) CLI_INTERNET_ACCESS=1; shift ;;
-        --no-internet-access)    CLI_INTERNET_ACCESS=0; shift ;;
-        --disable-networking)    CLI_DISABLE_NETWORKING=1; shift ;;
-        --no-disable-networking) CLI_DISABLE_NETWORKING=0; shift ;;
-        --runsc)    CLI_ENABLE_RUNSC=1; shift ;;
-        --no-runsc) CLI_ENABLE_RUNSC=0; shift ;;
-        --mount-home-cache)   CLI_MOUNT_HOME_CACHE=1; shift ;;
-        --no-mount-home-cache) CLI_MOUNT_HOME_CACHE=0; shift ;;
-        --mount-tmp)          CLI_MOUNT_TMP=1; shift ;;
-        --no-mount-tmp)        CLI_MOUNT_TMP=0; shift ;;
-        --mount-common-home-folders)   CLI_MOUNT_COMMON_HOME=1; shift ;;
-        --no-mount-common-home-folders) CLI_MOUNT_COMMON_HOME=0; shift ;;
         --mount)       EXTRA_MOUNTS+=("''${2:-}"); shift 2 || _reqval "$1" ;;
         --mount=*)     EXTRA_MOUNTS+=("''${1#*=}"); shift ;;
         --env)         EXTRA_ENVS+=("''${2:-}"); shift 2 || _reqval "$1" ;;
         --env=*)       EXTRA_ENVS+=("''${1#*=}"); shift ;;
+        --trusted-control-file) TRUSTED_CONTROL_FILE="''${2:-}"; shift 2 || _reqval "$1" ;;
+        --trusted-control-file=*) TRUSTED_CONTROL_FILE="''${1#*=}"; shift ;;
+        --workdir-read-only) WORKDIR_READ_ONLY=1; shift ;;
+        --forward-host-loopback) HOST_LOOPBACK_FORWARDS+=("''${2:-}"); shift 2 || _reqval "$1" ;;
+        --forward-host-loopback=*) HOST_LOOPBACK_FORWARDS+=("''${1#*=}"); shift ;;
         --sandbox-help) _print_sandbox_help; exit 0 ;;
         --sandbox-show-config) DRY_RUN=1; shift ;;
         --sandbox-open-shell) START_SHELL=1; shift ;;
-        ${
-          if enableYolo then
-            ''
-              --yolo)    YOLO_CLI=1; shift ;;
-              --no-yolo) YOLO_CLI=0; shift ;;
-            ''
-          else
-            ""
-        }
+        ${yoloBlocks.cases}
         --allow-host)     ALLOWED_HOSTS+=("''${2:-}"); shift 2 || _reqval "$1" ;;
         --allow-host=*)   ALLOWED_HOSTS+=("''${1#*=}"); shift ;;
         --allow-gui|--no-allow-gui|--no-gui)
@@ -239,6 +186,30 @@ writeShellScript "${agentName}-microvm" ''
       esac
     done
 
+    _VALIDATED_HOST_LOOPBACK_FORWARDS=()
+    for _port in "''${HOST_LOOPBACK_FORWARDS[@]+"''${HOST_LOOPBACK_FORWARDS[@]}"}"; do
+      case "$_port" in
+        ""|*[!0-9]*)
+          echo "Error: --forward-host-loopback requires a TCP port from 1 to 65535, got '$_port'." >&2
+          exit 2
+          ;;
+      esac
+      if [ "''${#_port}" -gt 5 ]; then
+        echo "Error: --forward-host-loopback requires a TCP port from 1 to 65535, got '$_port'." >&2
+        exit 2
+      fi
+      _port=$((10#$_port))
+      if [ "$_port" -lt 1 ] || [ "$_port" -gt 65535 ]; then
+        echo "Error: --forward-host-loopback requires a TCP port from 1 to 65535, got '$_port'." >&2
+        exit 2
+      fi
+      _VALIDATED_HOST_LOOPBACK_FORWARDS+=("$_port")
+    done
+    HOST_LOOPBACK_FORWARDS=(
+      "''${_VALIDATED_HOST_LOOPBACK_FORWARDS[@]+"''${_VALIDATED_HOST_LOOPBACK_FORWARDS[@]}"}"
+    )
+    unset _VALIDATED_HOST_LOOPBACK_FORWARDS _port
+
     MOUNT_BASE="${mountBase}"
     RUN_DIR=$(${coreutils}/bin/mktemp -d "''${TMPDIR:-/tmp}/${agentName}-microvm-run.XXXXXX")
     LOCK_FILE="$MOUNT_BASE.lock"
@@ -269,17 +240,18 @@ writeShellScript "${agentName}-microvm" ''
     SSH_SOCAT_PID=""
     GPG_SOCAT_PID=""
     _cleanup() {
-      [ -n "$VIRTIOFSD_PID" ] && { kill "$VIRTIOFSD_PID" 2>/dev/null; wait "$VIRTIOFSD_PID" 2>/dev/null || true; }
-      [ -n "$DOCKER_SOCAT_PID" ] && { kill "$DOCKER_SOCAT_PID" 2>/dev/null; wait "$DOCKER_SOCAT_PID" 2>/dev/null || true; }
-      [ -n "$LIBVIRT_SOCAT_PID" ] && { kill "$LIBVIRT_SOCAT_PID" 2>/dev/null; wait "$LIBVIRT_SOCAT_PID" 2>/dev/null || true; }
-      [ -n "$SSH_SOCAT_PID" ] && { kill "$SSH_SOCAT_PID" 2>/dev/null; wait "$SSH_SOCAT_PID" 2>/dev/null || true; }
-      [ -n "$GPG_SOCAT_PID" ] && { kill "$GPG_SOCAT_PID" 2>/dev/null; wait "$GPG_SOCAT_PID" 2>/dev/null || true; }
+      [ -n "$VIRTIOFSD_PID" ] && { kill "$VIRTIOFSD_PID" 2>/dev/null || true; wait "$VIRTIOFSD_PID" 2>/dev/null || true; }
+      [ -n "$DOCKER_SOCAT_PID" ] && { kill "$DOCKER_SOCAT_PID" 2>/dev/null || true; wait "$DOCKER_SOCAT_PID" 2>/dev/null || true; }
+      [ -n "$LIBVIRT_SOCAT_PID" ] && { kill "$LIBVIRT_SOCAT_PID" 2>/dev/null || true; wait "$LIBVIRT_SOCAT_PID" 2>/dev/null || true; }
+      [ -n "$SSH_SOCAT_PID" ] && { kill "$SSH_SOCAT_PID" 2>/dev/null || true; wait "$SSH_SOCAT_PID" 2>/dev/null || true; }
+      [ -n "$GPG_SOCAT_PID" ] && { kill "$GPG_SOCAT_PID" 2>/dev/null || true; wait "$GPG_SOCAT_PID" 2>/dev/null || true; }
       for pid in "''${EXTRA_VIRTIOFSD_PIDS[@]+"''${EXTRA_VIRTIOFSD_PIDS[@]}"}"; do
-        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
       done
-      rm -rf "$MOUNT_BASE/env" "$RUN_DIR"
-      rm -f "$MOUNT_BASE/.pid"
-      ${util-linux}/bin/flock -u 200
+      rm -rf "$MOUNT_BASE/env" "$RUN_DIR" || true
+      rm -f "$MOUNT_BASE/.pid" || true
+      ${util-linux}/bin/flock -u 200 || true
+      true
     }
     trap '_cleanup' EXIT INT TERM
 
@@ -309,30 +281,14 @@ writeShellScript "${agentName}-microvm" ''
       "''${EXTRA_QEMU_ARGS[@]+"''${EXTRA_QEMU_ARGS[@]}"}"
     )
 
-    _resolve_bool ENABLE_SSH        CLI_ENABLE_SSH        SANDBOX_ALLOW_SSH        ssh      0
-    _resolve_bool ENABLE_SSH_WRITE  CLI_ENABLE_SSH_WRITE  SANDBOX_ALLOW_SSH_WRITE  sshWrite 0
-    _resolve_bool ENABLE_GPG        CLI_ENABLE_GPG        SANDBOX_ALLOW_GPG        gpg      0
-    _resolve_bool ENABLE_GIT        CLI_ENABLE_GIT        SANDBOX_ALLOW_GIT        git      0
-    _resolve_bool ENABLE_DOCKER     CLI_ENABLE_DOCKER     SANDBOX_ALLOW_DOCKER     docker   0
-    _resolve_bool ENABLE_LIBVIRT    CLI_ENABLE_LIBVIRT    SANDBOX_ALLOW_LIBVIRT    libvirt  0
-    _resolve_bool ENABLE_NVIDIA     CLI_ENABLE_NVIDIA     SANDBOX_ALLOW_NVIDIA     nvidia   0
-    _resolve_bool ENABLE_FUSE       CLI_ENABLE_FUSE       SANDBOX_ALLOW_FUSE       fuse     0
-    _resolve_bool INTERNET_ACCESS   CLI_INTERNET_ACCESS   SANDBOX_INTERNET_ACCESS   internetAccess 1
-    _resolve_bool DISABLE_NETWORKING CLI_DISABLE_NETWORKING SANDBOX_DISABLE_NETWORKING disableNetworking 0
-    _resolve_bool ENABLE_RUNSC       CLI_ENABLE_RUNSC       SANDBOX_RUNSC              runsc             0
-    _resolve_bool MOUNT_HOME_CACHE  CLI_MOUNT_HOME_CACHE  SANDBOX_MOUNT_HOME_CACHE mountHomeCache 0
-    _resolve_bool MOUNT_TMP         CLI_MOUNT_TMP         SANDBOX_MOUNT_TMP        mountTmp       0
-    _resolve_bool MOUNT_COMMON_HOME CLI_MOUNT_COMMON_HOME SANDBOX_MOUNT_COMMON_HOME mountCommonHomeFolders 0
+    ${flagBlocks.resolve}
+    if [ "$ENABLE_PRIVACY_FILTER" -eq 1 ]; then
+      echo "Warning: --privacy-filter is not supported in microvm mode (no SOCKS routing), ignoring." >&2
+      ENABLE_PRIVACY_FILTER=0
+    fi
 
     XDG_PATH_FIX=0
-    _CFG_XDG=$(_cfg_tristate xdgRemap 2>/dev/null || true)
-    case "$_CFG_XDG" in 1) XDG_PATH_FIX=1 ;; 0) XDG_PATH_FIX=0 ;; esac
-    _CFG_NOXDG=$(_cfg_tristate noXdgRemap 2>/dev/null || true)
-    case "$_CFG_NOXDG" in 0) XDG_PATH_FIX=1 ;; 1) XDG_PATH_FIX=0 ;; esac
-    case "''${SANDBOX_XDG_REMAP:-}" in
-      1|true|yes|on)  XDG_PATH_FIX=1 ;;
-      0|false|no|off) XDG_PATH_FIX=0 ;;
-    esac
+    ${xdgResolveBlock}
 
     if [ "$DISABLE_NETWORKING" -eq 1 ]; then
       INTERNET_ACCESS=0
@@ -411,7 +367,15 @@ writeShellScript "${agentName}-microvm" ''
         exit 1 ;;
     esac
 
-    _add_path "$PWD"
+    if [ "$WORKDIR_READ_ONLY" -eq 1 ]; then
+      ${lib.optionalString (!trustedSupervisor) ''
+        echo "Error: --workdir-read-only requires a trusted-supervisor build." >&2
+        exit 2
+      ''}
+      _add_path "$PWD" ro
+    else
+      _add_path "$PWD"
+    fi
     for p in "''${_CFG_PATHS[@]+"''${_CFG_PATHS[@]}"}"; do _add_path "$p"; done
     for p in "''${_CFG_HOME_PATTERNS[@]+"''${_CFG_HOME_PATTERNS[@]}"}"; do _add_path "$p"; done
     for mount_group in "''${MOUNT_GROUPS[@]+"''${MOUNT_GROUPS[@]}"}"; do _apply_mount_group "$mount_group"; done
@@ -473,8 +437,41 @@ writeShellScript "${agentName}-microvm" ''
 
     ENV_FILE="$MOUNT_BASE/env/.env"
     : > "$ENV_FILE"
+    ${
+      if trustedSupervisor then
+        ''
+          if [ -z "$TRUSTED_CONTROL_FILE" ] || [ ! -f "$TRUSTED_CONTROL_FILE" ] || [ -L "$TRUSTED_CONTROL_FILE" ]; then
+            echo "Error: trusted supervisor requires one regular --trusted-control-file." >&2
+            exit 2
+          fi
+          if [ "$WORKDIR_READ_ONLY" -ne 1 ]; then
+            echo "Error: trusted supervisor requires --workdir-read-only." >&2
+            exit 2
+          fi
+          _CONTROL_SIZE=$(${coreutils}/bin/stat -Lc '%s' "$TRUSTED_CONTROL_FILE")
+          if [ "$_CONTROL_SIZE" -lt 1 ] || [ "$_CONTROL_SIZE" -gt 8388608 ]; then
+            echo "Error: trusted control file must be between 1 and 8388608 bytes." >&2
+            exit 2
+          fi
+          ${coreutils}/bin/cp --no-dereference -- "$TRUSTED_CONTROL_FILE" \
+            "$MOUNT_BASE/env/.trusted-control"
+          chmod 0600 "$MOUNT_BASE/env/.trusted-control"
+        ''
+      else
+        ''
+          if [ -n "$TRUSTED_CONTROL_FILE" ]; then
+            echo "Error: --trusted-control-file requires a trusted-supervisor build." >&2
+            exit 2
+          fi
+          if [ "$WORKDIR_READ_ONLY" -eq 1 ]; then
+            echo "Error: --workdir-read-only requires a trusted-supervisor build." >&2
+            exit 2
+          fi
+        ''
+    }
 
     _env_write() { printf '%s=%q\n' "$1" "$2" >> "$ENV_FILE"; }
+    _random_port() { echo $(( (RANDOM % 10000) + 40000 )); }
 
     for env in TERM LANG TZ; do
       [ -n "''${!env:-}" ] && _env_write "$env" "''${!env}"
@@ -553,7 +550,7 @@ writeShellScript "${agentName}-microvm" ''
         done
       fi
       if [ -n "$_DOCKER_SOCK" ] && [ -S "$_DOCKER_SOCK" ]; then
-        _DOCKER_PORT=$(( (RANDOM % 10000) + 40000 ))
+        _DOCKER_PORT=$(_random_port)
         ${socat}/bin/socat TCP-LISTEN:"$_DOCKER_PORT",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$_DOCKER_SOCK" &
         DOCKER_SOCAT_PID=$!
         _env_write DOCKER_HOST "tcp://10.0.2.2:$_DOCKER_PORT"
@@ -565,7 +562,7 @@ writeShellScript "${agentName}-microvm" ''
     _ssh_on=0
     { [ "$ENABLE_SSH" -eq 1 ] || [ "$ENABLE_SSH_WRITE" -eq 1 ]; } && _ssh_on=1
     if [ "$_ssh_on" -eq 1 ] && [ -n "''${SSH_AUTH_SOCK:-}" ] && [ -S "''${SSH_AUTH_SOCK:-}" ]; then
-      _SSH_PORT=$(( (RANDOM % 10000) + 40000 ))
+      _SSH_PORT=$(_random_port)
       ${socat}/bin/socat TCP-LISTEN:"$_SSH_PORT",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$SSH_AUTH_SOCK" &
       SSH_SOCAT_PID=$!
       echo "$_SSH_PORT" > "$MOUNT_BASE/env/.ssh-auth-port"
@@ -582,7 +579,7 @@ writeShellScript "${agentName}-microvm" ''
       [ -z "$_GPG_SOCK" ] && _GPG_SOCK="''${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/gnupg/S.gpg-agent"
       [ -z "$_GPG_SOCK" ] || [ ! -S "$_GPG_SOCK" ] && _GPG_SOCK="$HOME/.gnupg/S.gpg-agent"
       if [ -S "$_GPG_SOCK" ]; then
-        _GPG_PORT=$(( (RANDOM % 10000) + 40000 ))
+        _GPG_PORT=$(_random_port)
         ${socat}/bin/socat TCP-LISTEN:"$_GPG_PORT",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$_GPG_SOCK" &
         GPG_SOCAT_PID=$!
         echo "$_GPG_PORT" > "$MOUNT_BASE/env/.gpg-agent-port"
@@ -597,7 +594,7 @@ writeShellScript "${agentName}-microvm" ''
         [ -S "$_sock" ] && { _LIBVIRT_SOCK="$_sock"; break; }
       done
       if [ -n "$_LIBVIRT_SOCK" ]; then
-        _LIBVIRT_PORT=$(( (RANDOM % 10000) + 40000 ))
+        _LIBVIRT_PORT=$(_random_port)
         ${socat}/bin/socat TCP-LISTEN:"$_LIBVIRT_PORT",bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$_LIBVIRT_SOCK" &
         LIBVIRT_SOCAT_PID=$!
         echo "$_LIBVIRT_PORT" > "$MOUNT_BASE/env/.libvirt-port"
@@ -635,6 +632,29 @@ writeShellScript "${agentName}-microvm" ''
       fi
     fi
 
+    EXIT_CODE_FILE="$MOUNT_BASE/env/.exit-code"
+    : > "$EXIT_CODE_FILE"
+    # virtiofs preserves the host UID, which does not name the guest's
+    # unprivileged agent.  Keep the host parent private (MOUNT_BASE is 0700),
+    # but make only the control directory traversable and the files consumed
+    # by agent-run readable inside the single-purpose guest.
+    chmod 0711 "$MOUNT_BASE/env"
+    ${
+      if trustedSupervisor then ''chmod 0600 "$EXIT_CODE_FILE"'' else ''chmod 0666 "$EXIT_CODE_FILE"''
+    }
+    chmod 0644 \
+      "$ENV_FILE" \
+      "$MOUNT_BASE/env/.user" \
+      "$MOUNT_BASE/env/.home" \
+      "$MOUNT_BASE/env/.workdir" \
+      "$MOUNT_BASE/env/.mode" \
+      "$MOUNT_BASE/env/.args"
+    # The root-owned lockdown service must read this through UID-translated
+    # virtiofs. It contains only the operator-supplied host allowlist.
+    if [ -f "$MOUNT_BASE/env/.allowed-hosts" ]; then
+      chmod 0644 "$MOUNT_BASE/env/.allowed-hosts"
+    fi
+
     _MAX_MOUNTS=26
     if [ ''${#MOUNT_PATHS[@]} -gt $_MAX_MOUNTS ]; then
       echo "Error: too many shared directories (''${#MOUNT_PATHS[@]}); QEMU's microvm machine" >&2
@@ -650,6 +670,8 @@ writeShellScript "${agentName}-microvm" ''
     : > "$MOUNT_BASE/env/.mounts"
     runtime_args=""
     idx=0
+    HOST_UID=$(${coreutils}/bin/id -u)
+    HOST_GID=$(${coreutils}/bin/id -g)
 
     for mpath_spec in "''${MOUNT_PATHS[@]}"; do
       _mode="rw"
@@ -672,6 +694,9 @@ writeShellScript "${agentName}-microvm" ''
               --socket-path="$sock" \
               --shared-dir="$_mpath" \
               $_ro_flag \
+              --sandbox none \
+              --translate-uid "map:${builtins.toString guestAgentUid}:$HOST_UID:1" \
+              --translate-gid "map:${builtins.toString guestAgentGid}:$HOST_GID:1" \
               --cache=auto >> "$RUN_DIR/virtiofsd.log" 2>&1 &
             EXTRA_VIRTIOFSD_PIDS+=($!)
             runtime_args+=" -chardev socket,id=fs_extra_$idx,path=$sock"
@@ -725,11 +750,13 @@ writeShellScript "${agentName}-microvm" ''
     fi
 
     ${lib.optionalString useVirtiofs ''
+      _VIRTIOFSD_READY_ATTEMPTS=300
+
       idx=0
       for mpath in "''${MOUNT_PATHS[@]}"; do
         sock="$RUN_DIR/${agentName}-sandbox-virtiofs-extra-$idx.sock"
         pid="''${EXTRA_VIRTIOFSD_PIDS[$idx]}"
-        for _ in $(seq 1 50); do
+        for _ in $(seq 1 "$_VIRTIOFSD_READY_ATTEMPTS"); do
           [ -S "$sock" ] && break
           if ! kill -0 "$pid" 2>/dev/null; then
             echo "Warning: virtiofsd for $mpath exited early, skipping." >&2
@@ -743,21 +770,32 @@ writeShellScript "${agentName}-microvm" ''
       done
 
       cd "$RUN_DIR"
-      ${vmRunnerDir}/bin/virtiofsd-run >> "$RUN_DIR/virtiofsd.log" 2>&1 &
+      ${vmRunnerDir}/bin/virtiofsd-run --user "$(${coreutils}/bin/id -u)" >> "$RUN_DIR/virtiofsd.log" 2>&1 &
       VIRTIOFSD_PID=$!
 
-      for _ in $(seq 1 50); do
+      for _ in $(seq 1 "$_VIRTIOFSD_READY_ATTEMPTS"); do
         ready=1
-        for sock in ${agentName}-sandbox-virtiofs-nix-store.sock \
+        for sock in ${
+          lib.optionalString (!trustedSupervisor) "${agentName}-sandbox-virtiofs-nix-store.sock"
+        } \
                     ${agentName}-sandbox-virtiofs-env-share.sock; do
           [ -S "$RUN_DIR/$sock" ] || { ready=0; break; }
         done
         [ "$ready" -eq 1 ] && break
+        kill -0 "$VIRTIOFSD_PID" 2>/dev/null || break
         sleep 0.1
       done
 
       if [ "$ready" -ne 1 ]; then
-        echo "Error: virtiofsd sockets did not appear in time." >&2
+        echo "Error: virtiofsd sockets did not appear within 30 seconds." >&2
+        if ! kill -0 "$VIRTIOFSD_PID" 2>/dev/null; then
+          echo "Error: virtiofsd process exited before its sockets became ready." >&2
+        fi
+        if [ -s "$RUN_DIR/virtiofsd.log" ]; then
+          echo "----- virtiofsd.log (last 40 lines) -----" >&2
+          ${coreutils}/bin/tail -n 40 "$RUN_DIR/virtiofsd.log" >&2
+          echo "----- end virtiofsd.log -----" >&2
+        fi
         exit 1
       fi
     ''}
@@ -767,9 +805,25 @@ writeShellScript "${agentName}-microvm" ''
     ''}
 
     PATCHED_RUNNER="$RUN_DIR/microvm-run"
+    _HOST_LOOPBACK_FORWARD_ARGS=""
+    for _port in "''${HOST_LOOPBACK_FORWARDS[@]+"''${HOST_LOOPBACK_FORWARDS[@]}"}"; do
+      _forwarder="$RUN_DIR/host-loopback-$_port"
+      {
+        echo '#!/bin/sh'
+        echo 'exec ${socat}/bin/socat STDIO TCP:127.0.0.1:'"$_port"
+      } > "$_forwarder"
+      chmod 0700 "$_forwarder"
+      _HOST_LOOPBACK_FORWARD_ARGS+=",guestfwd=tcp:10.0.2.100:$_port-cmd:$_forwarder"
+    done
     ${gnused}/bin/sed -E \
       -e 's|^runtime_args=$|runtime_args=''${runtime_args:-}|' \
+      -e "s|-netdev 'user,id=usernet'|-netdev 'user,id=usernet$_HOST_LOOPBACK_FORWARD_ARGS'|" \
       ${lib.optionalString isDarwin "-e 's|-accel kvm[^ ]*|-accel hvf|g' -e 's|accel=kvm|accel=hvf|g' -e 's|-cpu host|-cpu max|g'"} \
+      ${
+        lib.optionalString (
+          cpuModel != null && !isDarwin
+        ) "-e ${lib.escapeShellArg "s|-cpu host|-cpu ${cpuModel}|g"}"
+      } \
       ${vmRunnerDir}/bin/microvm-run > "$PATCHED_RUNNER"
     chmod +x "$PATCHED_RUNNER"
 
@@ -778,6 +832,26 @@ writeShellScript "${agentName}-microvm" ''
       runtime_args="$runtime_args $(printf '%q' "$_qa")"
     done
     export runtime_args
-    "$PATCHED_RUNNER"
-    exit $?
+    _QEMU_STATUS=0
+    if "$PATCHED_RUNNER"; then
+      _QEMU_STATUS=0
+    else
+      _QEMU_STATUS=$?
+    fi
+    ${lib.optionalString trustedSupervisor ''
+      if [ "$_QEMU_STATUS" -ne 0 ]; then
+        echo "Error: trusted guest terminated abnormally with QEMU status $_QEMU_STATUS; refusing its result." >&2
+        exit 1
+      fi
+    ''}
+    _GUEST_STATUS=""
+    IFS= read -r _GUEST_STATUS < "$EXIT_CODE_FILE" || true
+    case "$_GUEST_STATUS" in
+      ""|*[!0-9]*) echo "Error: guest agent exit status was not reported (QEMU exited $_QEMU_STATUS)." >&2; exit 1 ;;
+    esac
+    if [ "$_GUEST_STATUS" -gt 255 ]; then
+      echo "Error: guest agent reported invalid exit status $_GUEST_STATUS." >&2
+      exit 1
+    fi
+    exit "$_GUEST_STATUS"
 ''
