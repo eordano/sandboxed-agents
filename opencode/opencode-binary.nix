@@ -16,7 +16,7 @@
 
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "opencode";
-  version = "1.18.30";
+  version = "1.18.32";
 
   inherit src;
 
@@ -66,7 +66,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     dontFixup = true;
 
-    outputHash = "sha256-tWbYyH/PL0MG+pZ2lOytThEDucVoRkNIytAl6/GZw3E=";
+    outputHash = "sha256-qMdLu6y4jQ/wV/dkQbMCHeqwZrBhd9/kanSQwnkX+Gc=";
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
   };

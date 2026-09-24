@@ -44,16 +44,16 @@
     "gemini-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1788901615,
-        "narHash": "sha256-5VHGOXrB35dM3CxbZtpF5W8HovN7KrLcRM3oIRdS7+U=",
+        "lastModified": 1790207459,
+        "narHash": "sha256-7MQKeNkRqso9Dhw1rb+tFwnTLuxte7qforwggm8dEns=",
         "owner": "google-gemini",
         "repo": "gemini-cli",
-        "rev": "fb0d535af931b27c51e87e5e6ade72905b1e8390",
+        "rev": "bb523741c7429a44d03e964bc124c7c92df59d5f",
         "type": "github"
       },
       "original": {
         "owner": "google-gemini",
-        "ref": "v0.59.0",
+        "ref": "v0.61.0",
         "repo": "gemini-cli",
         "type": "github"
       }
@@ -71,11 +71,11 @@
         "uv2nix": "uv2nix"
       },
       "locked": {
-        "lastModified": 1789474353,
-        "narHash": "sha256-/Jxh0QI3rJ+hAPWqM+9rWJKBz28HHrwYeHuT5tEMDHU=",
+        "lastModified": 1790269715,
+        "narHash": "sha256-+OPszAVOcDZdNN0L4aenfxBywuxWFQtOiJAjKtcWEeY=",
         "owner": "NousResearch",
         "repo": "hermes-agent",
-        "rev": "7c47e5517b28721a726cef5bb991dd95adaf78ec",
+        "rev": "7fb8736a1e63604b0c474bf0098f2bd5a71e8106",
         "type": "github"
       },
       "original": {
@@ -186,16 +186,16 @@
     "opencode-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1788924854,
-        "narHash": "sha256-G4qRDwJ6i5SpsiHoej31HRPLOHpkLc66B+UmdzOY1+o=",
+        "lastModified": 1790031067,
+        "narHash": "sha256-h5AmK9R0Clk+LT0Tmmfg7iXa6dXNlPi2I5xCjTDRdcg=",
         "owner": "anomalyco",
         "repo": "opencode",
-        "rev": "3104c1428ec91f809e5ab86631300de41eb6952e",
+        "rev": "545f51d26cc39a907d2867492d498d9607ea5fa4",
         "type": "github"
       },
       "original": {
         "owner": "anomalyco",
-        "ref": "v1.18.30",
+        "ref": "v1.18.32",
         "repo": "opencode",
         "type": "github"
       }

@@ -5,8 +5,8 @@
 }:
 
 let
-  version = "0.59.0";
-  npmDepsHash = "sha256-bKIWXlWmz5y3sZuBFIZQh5i4AHTqNEOD9NPEtwB+3l8=";
+  version = "0.61.0";
+  npmDepsHash = "sha256-E2MFdipzVBe1As6xq5XcMuKKp7915kg0I7YeaKYO0TY=";
 in
 gemini-cli.overrideAttrs (old: {
   inherit version src npmDepsHash;

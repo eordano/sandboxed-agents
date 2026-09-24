@@ -9,25 +9,25 @@
 }:
 
 let
-  version = "2.1.268";
+  version = "2.1.281";
 
   platformInfo =
     {
       "x86_64-linux" = {
         platform = "linux-x64";
-        sha256 = "0lsn8ah98sm1f4qj6h15crdw8zzzahpf7f7zik514rvrpnvs54cn";
+        sha256 = "1qfwlvpbaczjjpkjv77va1bxbsizvgfrk4kygnr5yijqhjl3vzjn";
       };
       "aarch64-linux" = {
         platform = "linux-arm64";
-        sha256 = "0qlgihbblww7jjgs9gdzss7c474y90ndcw7ixl4ixvrrz4qx0vqi";
+        sha256 = "13rjxpk7yr1gbhz48mfsnqlbcwvav8psv6yj1ikx3zm471jb69yx";
       };
       "aarch64-darwin" = {
         platform = "darwin-arm64";
-        sha256 = "0sn7ddqwvrxp8cqa2ahj9k654whdwrc1r7w543qp0dzq4da6va86";
+        sha256 = "09pnhgycqxklg657z9jwrg5rjpqscahbm7czxx8s4m9vdwgrh8m9";
       };
       "x86_64-darwin" = {
         platform = "darwin-x64";
-        sha256 = "1sb7vb9vwmljdvp6gspkcnpw3hl0r7krl4n9in7g4ydbn1d0sk7r";
+        sha256 = "124hrpbgx4m0pikmwppschpnf0bl77pscqfgxx4fj7191nxmqdd9";
       };
     }
     .${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
